@@ -1,6 +1,6 @@
 #!/usr/bin/python
 """ A parameterizable division routine builder for 6502 """
- 
+
 ##################################################################################
 #
 # A parameterizable division routine builder for 6502.
@@ -2746,7 +2746,9 @@ def test_from_old(args):
 						use_smc=conv[10], first=False)
 
 					size, mean, mean64, mean16, median, worst, emean, emean64, emean16, emedian, eworst = conv[11:22]
-					divi.result = ("", "", True, "", mean, mean64, mean16, median, worst, emean, emean64, emean16, emedian, eworst, size, (False, -1, -1, (emean, emean64, emean16, emedian, eworst), None))
+					divi.result = ("", "", True, "",	mean, mean64, mean16, median, worst,
+														emean, emean64, emean16, emedian, eworst,
+														size, (False, -1, -1, (emean, emean64, emean16, emedian, eworst), None))
 					divi.add_line(stat_lists)
 
 	print_stats(args, stat_lists)
