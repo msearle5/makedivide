@@ -4,59 +4,83 @@
 #
 # A parameterizable division routine builder for 6502.
 #
-# The division routines produced use a table of divide-by-constant routines, falling back to repeated subtraction for higher denominator values.
+# The division routines produced use a table of divide-by-constant routines, falling back
+# to repeated subtraction for higher denominator values.
 # The repeated subtraction may use a loop (smaller) or unrolled code (faster).
-# To limit the size of the divide-by-constant routines, they share code when possible - multiples of powers of two are handled by one or more
-# leading shift-rights for the power of two, so for example a divide-by-5 routine also handles 10, 20 and 40.
-# Factoring (e.g. replacing "x/9" with "(x/3)/3") is used when it saves time, when asked for (it adds some size) which is for 9 (22-62 cycles
-# saved) or 15 (4-17 cycles saved) only (and their multiples of powers of two), when the custom routine for those denominators is not used.
+# To limit the size of the divide-by-constant routines, they share code when possible -
+# multiples of powers of two are handled by one or more leading shift-rights for the power
+# of two, so for example a divide-by-5 routine also handles 10, 20 and 40.
+# Factoring (e.g. replacing "x/9" with "(x/3)/3") is used when it saves time, when asked for
+# (it adds some size) which is for 9 (22-62 cycles saved) or 15 (4-17 cycles saved) only
+# (and their multiples of powers of two), when the custom routines for those denominators are
+# not used.
 # The routines also by default share trailing code, so to save space will branch between routines.
 #
 # Options:
-# def make_divide(max_custom, max_full, numerator, denominator, prefix, insn, label, equb, comment, *, fallback_unrolled_subtraction = True, high_bit_check = False, early_high_bit = False, divide_by_0=None, use_factoring=False, inlining=False):
 #
 ###################################################################################
 # Formatting options:
-# These don't change the effect of the code, but change the prefixes used for compatibility with different assemblers and to allow multiplecopies to be used.
-#
-# "fallback_unrolled_subtraction" if true, will use straight line code instead of a loop for repeated subtraction (faster, but longer - how much
-#            longer depends on the maximum possible result, which increases for smaller jump table sizes. The result of that it that there is a
-#            minimum-size table length point where reducing the size further produces larger (and slower) code.
+# These don't change the effect of the code, but change the prefixes used for compatibility with
+# different assemblers and to allow multiple copies to be used in the same asm output.
 #
 ###################################################################################
 # Options determining what divider will be produced:
 #
 # "max_custom" is the highest value for which a custom routine (as opposed to repeated subtraction) is used.
 #
-# "max_full" (which must be no more than max_custom) is the highest value for which a custom routine that is not just a divide-by-2 or 4 in front
-#            of another is used.
+# "max_full" (which must be no more than max_custom) is the highest value for which a custom routine
+#            that is not just a divide-by-2 or 4 in front of another is used.
 #
-# "inlining" if true, will make every divide-by-constant separate, rather than sharing parts (branching between them). This uses more space but
-#            is a little faster (saving 3 cycles for a branch in the affected denominators)
+# "inlining" if true, will make every divide-by-constant separate, rather than sharing parts (branching
+#            between them). This uses more space but is a little faster (saving 3 cycles for a branch in the affected denominators)
 #
-# "high_bit_check" if true adds a check for high bit set (128+) denominators. These can be handled simply (the result is either 0 or 1, depending
-#            on whether the numerator is less than the denominator or not) so this improves performance if high denominators are expected. The
-#            check occurs by default only if the denominator is known to not use the jump table, so those routines won't be slowed by the check
-#            - only ones using the generic divider.
+# "high_bit_check" if true adds a check for high bit set (128+) denominators. These can be handled simply
+#            (the result is either 0 or 1, depending on whether the numerator is less than the denominator
+#            or not) so this improves performance if high denominators are expected. The check occurs by
+#            default only if the denominator is known to not use the jump table, so those routines won't
+#            be slowed by the check - only ones using the generic divider.
 #
-# "early_high_bit" if true (and if high_bit_check is also true) it will check for denominators >= 128 before the check for denominators in the jump
-#            table. No effect on size, it makes high denominators faster and low ones slower. On average it's an improvement (there are 128
-#            high-bit-set denominators and no more than 64 entries in the jump table), although that only matters if you are expecting evenly
-#            distributed arguments.
+# "early_high_bit" if true (and if high_bit_check is also true) it will check for denominators >= 128 before
+#            the check for denominators in the jump table. No effect on size, it makes high denominators
+#            faster and low ones slower. On average it's an improvement (there are 128 high-bit-set
+#            denominators and no more than 64 entries in the jump table), although that only matters if you
+#            are expecting evenly distributed arguments.
+#
+# "fallback_unrolled_subtraction" if true, will use straight line code instead of a loop for
+#   repeated subtraction (faster, but longer - how much longer depends on the maximum possible
+#   result, which increases for smaller jump table sizes. The result of that it that there is a
+#   minimum-size table length point where reducing the size further produces larger (and slower) code.
 #
 
-# TODO is the loop always smaller?
-# TODO - option to use dedicated routines for 64, 12 etc.
-# TODO - find more routines? (they are made mostly from ror, lsr and adc numerator)
+###################################################################################
+# Options determining what calling convention will be used:
+#
+# By default, the divider takes the numerator from memory and the denominator from X,
+# The result is returned in A. No registers are preserved.
+
+
+
+# Environment:
+#
 # TODO reg in-out?
-#		- for denom in X Y A or memory, done
-# TODO simplify (inline etc) small choice, allow the size 1 case, generally improve small end
-# TODO short unrolls are not the best?
-# TODO make TOML output as external files so as to be non-Imogoly?
-# TODO compactify ends (21_end) - after new routines used
-# TODO fix interruption or remove it
-# TODO split testing
+#   - for denom or num in X Y A or memory, and wrapper for return in X Y or memory, done
+#   - option to preserve on stack those registers not taking or returning? (makes the wrapper more complex though)
+#	- return presents a problem in that there are a lot of RTS and if they aren't one byte tables change.
+#	- wrap, if you really want this? Same with stack saves
+#	- Replacing RTS with JMP to STA;RTS is faster than JSR;RTS;STA;RTS (wrapper) though.
+#	- there are usaully a lot of RTSs (either unrolled, or table), but not always.
 
+# TODO short unrolls are not the best (= replacement for few iters)??
+# TODO proper documentation! (or at least a README.md)
+# TODO describe 4000 in table
+# TODO pylint?
+# TODO option to remove one prime (only useful if there is one that doesn't pay for itself?, 'allow even above j' might be more useful.)
+# TODO custom mixing function? include custom max (vs 64,16)?
+# TODO test (emulate) a single case?
+# TODO 65C02 mode (e.g. reg entry)
+#		- is there anywhere that would use it? STZ
+# TODO Single constant denom mode
+# TODO get rid of single entry tables
 
 import argparse
 import concurrent.futures
@@ -69,6 +93,15 @@ import sys
 import tempfile
 import time
 
+
+# Maximum length of a command line output in stats
+MAX_COMMAND = 38
+
+# Longer than any actual code, the timeout
+BAD_CYCLES = 4000
+
+REG_MEM_SOURCES = ( "x", "y", "a", "memory" )
+
 # Available constants to divide by
 CUSTOMS = {
 	0, 1, 2, 3, 4,
@@ -77,8 +110,8 @@ CUSTOMS = {
 	15, 16, 17, 18,
 	19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
 	29, 30, 31, 32, 34, 36,
-	40, 44, 48, 52, 56,
-	60, 64
+	38, 40, 42, 44, 46, 48, 50, 52, 54, 56,
+	58, 60, 62, 64, 68, 72, 76
 }
 
 # Prime numbers including 1, below 100.
@@ -89,28 +122,43 @@ PRIMES = {
 	79, 83, 89, 97
 }
 
+# Fast tests use this denominator and numerator only
+FAST_TEST = (
+	0, 1, 2, 3,
+	4, 6, 8, 10,
+	12, 16, 20, 24,
+	28, 36, 44, 52,
+	60, 76, 82, 98,
+	112, 127, 128, 129,
+	144, 176, 224, 255
+)
+
+# Case lists: filled only when requested 
+FAST_CASES = []
+FULL_CASES = []
+
 # Has a tail branch
 TAIL = {
-	7, 11, 13, 15, 19, 23, 25, 27, 29, 31
+	7, 11, 13, 15, 19, 23, 25, 27, 29, 31, 32
 }
 
-# Cycles taken for the branching-tail variant of each routine
+# Cycles taken for the unbranching-tail variant of each routine
 CYCLES = {
-	3: 9+16+2,
-	5: 9+16+2,
-	7: 3+12+3+3+6,
-	9: 9+18,
-	11: 9+12+3+3+8,
-	13: 9+14+3+3+8,
-	15: 0+8+2+3+3+8,
-	17: 9+8+2+8,
-	19: 9+8+3+8,
-	21: 3+22,
-	23: 3+8+3+3+10,
-	25: 3+8+3+3+12,
-	27: 3+8+3+3+12,
-	29: 6+12+3+3+12,
-	31: 0+8+3+3+12
+	3: 27,
+	5: 27,
+	7: 24,
+	9: 27,
+	11: 32,
+	13: 34,
+	15: 21,
+	17: 27,
+	19: 27,
+	21: 33,
+	23: 31,
+	25: 26,
+	27: 24,
+	29: 33,
+	31: 23
 }
 
 # Time taken to dispatch through a choice tree (max custom which is 1+ number of choices includig 0)
@@ -119,1129 +167,1527 @@ CHOICE_CYCLES = {
 	3: (8+11+7+9) / 4,
 	4: (10+12+14+7+9) / 5,
 	5: (7+11+13+10+12+14) / 6,
-	6: (7+13+15+17+10+12+14) / 7,
-	7: (7+11+13+15+10+12+16+17) / 8,
+#	6: (7+13+15+17+10+12+14) / 7,
+#	7: (7+11+13+15+10+12+16+17) / 8,
 }
 
 CYCLES12 = copy.deepcopy(CYCLES)
 CYCLES12[1] = 0
 
-NOT_POSS = ": !warn: Half RTS not possible"
+NOT_POSS = ": !warn: Half pointer not possible"
 
-# Cycles needed to check the high bit, and if set return 1 or 0.
-def cycles_by_high_bit(numerator, denominator, high_bit):
-	cycles = 0
-	if high_bit is True:
-		if numerator < 128:
-			cycles += 2
-		else:
-			if numerator < denominator:
-				cycles += 12
+
+
+class Divider:
+	def __init__(self, *, max_custom = 24, max_full = 24, numerator = "num", denominator = "denom", prefix = "", \
+		insn = "\t", label = "", equb = "!byte", comment = ";", style="", emulate=False, \
+		fallback_unrolled_subtraction = True, high_bit_check = False, early_high_bit = False, divide_by_0=None, error_vector=False, \
+		use_factoring=False, inlining=False, use_choice_tree=False, max_shifting_divider=0, with_stats=False, \
+		half_table=False, use_smc=False, denominator_from="x", numerator_from="memory", result_to="a", fast_stats=False, \
+		random_stats=0, assemble=False, first=False, known_denominator=None):
+
+		self.emulate = emulate
+		self.assemble = assemble
+		self.first = first
+		self.max_custom = max_custom
+		self.max_full = max_full
+		self.numerator = numerator
+		self.denominator = denominator
+		self.prefix = prefix
+		self.insn = insn
+		self.label = label
+		self.style = style
+		self.equb = equb
+		self.comment = comment
+		self.fallback_unrolled_subtraction = fallback_unrolled_subtraction
+		self.high_bit_check = high_bit_check
+		self.early_high_bit = early_high_bit
+		self.divide_by_0=divide_by_0
+		self.error_vector=error_vector
+		self.use_factoring=use_factoring
+		self.inlining=inlining
+		self.use_choice_tree=use_choice_tree
+		self.max_shifting_divider=max_shifting_divider
+		self.with_stats=with_stats
+		self.half_table=half_table
+		self.use_smc=use_smc
+		self.denominator_from=denominator_from
+		self.numerator_from=numerator_from
+		self.result_to=result_to
+		self.fast_stats=fast_stats
+		self.random_stats=random_stats
+		self.known_denominator=known_denominator
+
+	# Cycles needed to check the high bit, and if set return 1 or 0.
+	def cycles_by_high_bit(self, numerator, denominator):
+		""" Cycles needed to check the high bit, and if set return 1 or 0. """
+		cycles = 0
+		if self.high_bit_check is True:
+			if numerator < 128:
+				cycles += 2
 			else:
-				cycles += 10
-	return cycles
+				if numerator < denominator:
+					cycles += 12
+				else:
+					cycles += 10
+		return cycles
 
-# Cycles needed to find the quotient by repeated subtraction
-def cycles_by_subtraction(numerator, denominator, unrolled, high_bit):
-	quotient = numerator // denominator
+	# Cycles needed to find the quotient by repeated subtraction
+	def cycles_by_subtraction(self, numerator, denominator):
+		quotient = 1+(numerator // denominator)
 
-	cycles = cycles_by_high_bit(numerator, denominator, high_bit)
-	if high_bit is True:
-		if numerator < 128:
-			cycles += 2
-		else:
-			if numerator < denominator:
-				cycles += 12
+		cycles = self.cycles_by_high_bit(numerator, denominator)
+		if self.high_bit_check is True:
+			if numerator < 128:
+				cycles += 2
 			else:
-				cycles += 10
+				if numerator < denominator:
+					cycles += 12
+				else:
+					cycles += 10
 
-	if not unrolled:
-		cycles += 7	# leading loop
-		cycles += 8 * quotient # per iter
-		cycles += 1 # exiting loop, not including RTS as all must do that. Minus 1 as branch not taken
-	else:
-		cycles += 5 # before unrolled loop
-		cycles += 6 * quotient # per iter
-		cycles += 3 # end
-		if quotient == 255 // denominator:
-			cycles -= 1
-	return cycles
+		if not self.fallback_unrolled_subtraction:
+			cycles += 1 # emu
+			cycles += 7	# leading loop
+			cycles += 8 * quotient # per iter
+			cycles += 1 # exiting loop, not including RTS as all must do that. Minus 1 as branch not taken
+		else:
+			cycles += 5 # before unrolled loop
+			cycles += 6 * quotient # per iter
+			cycles += 3 # end
+			if quotient == 255 // denominator:
+				cycles -= 1
+		return cycles
 
-# Cycles needed to find the quotient by repeated subtraction averaged over all numerators
-def mean_cycles_by_subtraction(denominator, unrolled, high_bit):
-	total = 0
-	for num in range(0,256):
-		total += cycles_by_subtraction(num, denominator, unrolled, high_bit)
-	return total / 256
 
-# Cycles needed to find the quotient by a custom routine
-def cycles_by_custom(numerator, denominator, high_bit, inlining, powers_of_2=False):
-	cycles = cycles_by_high_bit(numerator, denominator, high_bit)
-	inline_mod = 0
-	if inlining is True and denominator in TAIL:
-		inline_mod = -3
-	cyc = CYCLES
-	if powers_of_2 is True:
-		cyc = CYCLES12
-	if denominator in cyc:
-		return cyc[denominator]+inline_mod
-	elif denominator//2 in cyc:
-		return cyc[denominator//2]+2+inline_mod
-	elif denominator//4 in cyc:
-		return cyc[denominator//4]+4+inline_mod
-	elif denominator//8 in cyc:
-		return cyc[denominator//8]+6+inline_mod
-	elif denominator//16 in cyc:
-		return cyc[denominator//16]+8+inline_mod
-	elif denominator//32 in cyc:
-		return cyc[denominator//32]+10+inline_mod
-	elif denominator//64 in cyc:
-		return cyc[denominator//64]+12+inline_mod
-	return None
+	# Cycles needed to find the quotient by repeated subtraction averaged over all numerators
+	def mean_cycles_by_subtraction(self, denominator):
+		total = 0
+		for num in range(0,256):
+			total += self.cycles_by_subtraction(num, denominator)
+		return total / 256
 
-# Cycles needed to find the quotient by a combination of two custom routines
-def cycles_by_factor(factor0, factor1, inlining):
-	c1 = cycles_by_custom(0, factor0, False, inlining)
-	c2 = cycles_by_custom(0, factor1, False, inlining)
-	if c1 is None or c2 is None:
+	# Cycles needed to find the quotient by a custom routine
+	def cycles_by_custom(self, numerator, denominator, powers_of_2=False):
+		cycles = self.cycles_by_high_bit(numerator, denominator)
+		inline_mod = 0
+		if self.inlining is False and denominator in TAIL:
+			inline_mod = 3
+		cyc = CYCLES
+		if powers_of_2 is True:
+			cyc = CYCLES12
+		if denominator in cyc:
+			return cyc[denominator]+inline_mod+cycles
+		elif denominator//2 in cyc:
+			return cyc[denominator//2]+2+inline_mod+cycles
+		elif denominator//4 in cyc:
+			return cyc[denominator//4]+4+inline_mod+cycles
+		elif denominator//8 in cyc:
+			return cyc[denominator//8]+6+inline_mod+cycles
+		elif denominator//16 in cyc:
+			return cyc[denominator//16]+8+inline_mod+cycles
+		elif denominator//32 in cyc:
+			return cyc[denominator//32]+10+inline_mod+cycles
+		elif denominator//64 in cyc:
+			return cyc[denominator//64]+12+inline_mod+cycles
 		return None
-	return 8 + c1 + c2	# jsr, rts, bpl
 
-# Find the set of two factors which is fastest
-def cheapest_factors(max_custom, denominator, inlining):
-	# Use a single factor if possible
-	if denominator <= max_custom:
-		result = cycles_by_custom(0, denominator, False, inlining)
-		if result is not None:
-			return (result, denominator, 1)
- 
-	# Search for all possible pairs
-	factors = []
-	maxf = math.ceil(math.sqrt(denominator))
-	maxf = min(maxf, max_custom)
-	for f in range(3, maxf+1):
-		for g in range(3, maxf+1):
-			if f*g == denominator:
-				cfg = cycles_by_factor(f, g, inlining)
-				if cfg is not None:
-					factors.append((cfg, f, g))
-	if len(factors) == 0:
-		return (None, denominator, 1)
-	if len(factors) == 1:
-		return factors[0]
+	# Cycles needed to find the quotient by a combination of two custom routines
+	def cycles_by_factor(self, factor0, factor1):
+		c1 = self.cycles_by_custom(0, factor0, False)
+		c2 = self.cycles_by_custom(0, factor1, False)
+		if c1 is None or c2 is None:
+			return None
+		return 15 + c1 + c2	# jsr, rts, bpl
 
-	# Find the best
-	factors.sort()
-	return factors[-1]
+	# Find the set of two factors which is fastest
+	def cheapest_factors(self, denominator):
+		# Use a single factor if possible
+		if denominator <= self.max_custom:
+			result = self.cycles_by_custom(0, denominator, False)
+			if result is not None:
+				return (result, denominator, 1)
 
-# Returns (True, X, Y) if factoring is possible and improves average performance
-# where X and Y are the best factors to use.
-# Otherwise returns (False, X, 1).
-def factoring_is_good(max_custom, denominator, unrolled, high_bit, inlining):
-	fac_cycles, factor1, factor2 = cheapest_factors(max_custom, denominator, inlining)
-	if factor2 == 1:
-		# factoring not needed, or not possible
-		return (False, factor1, factor2)
-	sub_cycles = mean_cycles_by_subtraction(denominator, unrolled, high_bit)
-	return (fac_cycles < sub_cycles, factor1, factor2)
+		# Search for all possible pairs
+		factors = []
+		maxf = math.ceil(math.sqrt(denominator))
+		maxf = min(maxf, self.max_custom)
+		for f in range(3, maxf+1):
+			for g in range(3, maxf+1):
+				if f*g == denominator:
+					cfg = self.cycles_by_factor(f, g)
+					if cfg is not None:
+						factors.append((cfg, f, g))
+		if len(factors) == 0:
+			return (None, denominator, 1)
+		if len(factors) == 1:
+			return factors[0]
 
-def cycles_by_generic(numerator, denominator, unrolled, high_bit, max_shifting_divider):
-	if denominator <= max_shifting_divider:
-		return 161.5	# FIXME get a more accurate average from the test mode, reduced because preamble, or a trace of execution
-	return cycles_by_subtraction(numerator, denominator, unrolled, high_bit)
+		# Find the best
+		factors.sort()
+		return factors[-1]
 
-def mean_cycles_numerator(numerator, denominator, max_custom, max_full, unrolled, high_bit, early_high_bit, inlining, factoring, choice_tree, max_shifting_divider):
-	cycles = 12 # JSR-RTS
+	# Returns (True, X, Y) if factoring is possible and improves average performance
+	# where X and Y are the best factors to use.
+	# Otherwise returns (False, X, 1).
+	def factoring_is_good(self, denominator):
+		fac_cycles, factor1, factor2 = self.cheapest_factors(denominator)
+		if factor2 == 1:
+			# factoring not needed, or not possible
+			return (False, factor1, factor2)
+		sub_cycles = self.mean_cycles_by_subtraction(denominator)
+		return (fac_cycles < sub_cycles, factor1, factor2)
 
-	# Early hi bit test
-	if high_bit is True and early_high_bit is True:
-		cycles += cycles_by_high_bit(numerator, denominator, high_bit)
-		if denominator >= 128:
-			return cycles
+	def cycles_by_generic(self, numerator, denominator):
+		cycles = 0
+		if self.max_shifting_divider != 0 and self.max_shifting_divider != 256:
+			cycles += 5
+		if denominator <= self.max_shifting_divider:
+			return cycles + 158 # this isn't accurate for all cases
+		return cycles + self.cycles_by_subtraction(numerator, denominator)
 
-	# Jump table test
-	if denominator <= max_custom:
-		cycles += 4
-		# and dispatch (RTS trick)
-		if denominator not in CHOICE_CYCLES or choice_tree is False:
-			cycles += 23
-		else:
-			cycles = CHOICE_CYCLES[denominator]
-		# Custom?
-		if denominator in CUSTOMS and (denominator in PRIMES or denominator <= max_full):
-			cc = cycles_by_custom(numerator, denominator, high_bit, inlining, True)
-			if cc is None:
-				cycles += cycles_by_generic(numerator, denominator, unrolled, False, max_shifting_divider)
-			else:
-				cycles += cc
-		else:
-			if factoring is True:
-				is_good, factor1, factor2 = factoring_is_good(max_full, denominator, unrolled, high_bit, inlining)
-			else:
-				is_good = False
-			if is_good is True:
-				cycles += cycles_by_factor(factor1, factor2, inlining)
-			else:
-				cycles += cycles_by_generic(numerator, denominator, unrolled, False, max_shifting_divider)
-	else:
-		cycles += 5
+	def mean_cycles_numerator(self, numerator, denominator, jumps):
+		cycles = 12 # JSR-RTS
 
-		if high_bit is True and early_high_bit is False:
-			cycles += cycles_by_high_bit(numerator, denominator, high_bit)
+		# Early high bit test
+		if self.high_bit_check is True and self.early_high_bit is True:
+			cycles += self.cycles_by_high_bit(numerator, denominator)
+			cycles += 3 # match emu
 			if denominator >= 128:
 				return cycles
 
-		cycles += cycles_by_generic(numerator, denominator, unrolled, False, max_shifting_divider)
-	return cycles
-
-def stats_cycles(max_custom, max_full, unrolled, high_bit, early_high_bit, inlining, factoring, choice_tree, max_shifting_divider):
-	cycles = 0
-	clist=[]
-	cycles64 = 0
-	cycles16 = 0
-	for numerator in range(0,256):
-		for denominator in range(1,256):
-			c = mean_cycles_numerator(numerator, denominator, max_custom, max_full, unrolled, high_bit, early_high_bit, inlining, factoring, choice_tree, max_shifting_divider)
-			clist.append(c)
-			cycles += c
-			if denominator <= 64:
-				cycles64 += c
-			if denominator <= 16:
-				cycles16 += c
-	cycles /= 255*256
-	cycles64 /= 63*256
-	cycles16 /= 15*256
-	clist.sort()
-	median = clist[len(clist)//2]
-	worst = clist[-1]
-	return cycles, cycles64, cycles16, median, worst
-
-# The main entry point: see top of file for documentation
-def make_divide(max_custom, max_full, numerator, denominator, prefix, insn, label, equb, comment, *, fallback_unrolled_subtraction = True, high_bit_check = False, early_high_bit = False, divide_by_0=None, use_factoring=False, inlining=False, use_choice_tree=False, max_shifting_divider=0, with_stats=False, dry_run=False, half_table=False, use_smc=False, denominator_from="x"):
-	if dry_run:
-		if (max_full > max_custom) or (early_high_bit and not high_bit_check) or (max_full < 2):
-			return False
-	else:
-		assert (max_full <= max_custom)
-		assert (high_bit_check or not early_high_bit)
-		assert (max_full >= 2)
-
-	# FIXME: make 6/7 usable or remove them
-	if max_custom >= 5 and use_choice_tree is True:
-		if dry_run is True:
-			return False
-		use_choice_tree = False
-		avail = False
-		print("WARNING: choice_tree not available for max_custom >= 5")
-
-	low_iters_max = 0
-	if high_bit_check is True and fallback_unrolled_subtraction is True:
-		low_iters_max = 2
-
-	# Reduce if there is wasted space at the top of the table
-	while max_custom not in CUSTOMS:
-		max_custom -= 1
-
-	# Build a table of jumps - determine which are available
-	jumps = set()
-	for i in range(0, max(3, max_custom+1)):
-		jumps.add(i)
-		for j in range(1, 7):
-			if (i*(1<<j)) <= max_full:
-				jumps.add(i*(1<<j))
-
-	# Determinae the divide by 0 address
-	internal_div_by_0 = False
-	if divide_by_0 is None:
-		internal_div_by_0 = True
-		divide_by_0 = f"{prefix}divide_by_0"
-
-	# Jump table - make entries
-	factors = set()
-	jumpentries = []
-	jumpentries.append(divide_by_0)
-	max_custom_avail = max_custom
-	for i in range(1, max_custom+1):
-		if i in CUSTOMS and (i in PRIMES or i <= max_full):
-			jumpentries.append(f"{prefix}divide_by_{i}")
+		# Jump table test
+		if denominator <= self.max_custom:
+			cycles += 4
+			# and dispatch (RTS trick, etc)
+			if denominator not in CHOICE_CYCLES or self.use_choice_tree is False:
+				if self.half_table is True:
+					if self.use_smc is True:
+						cycles += 11	# lda abs+x; sta abs; jmp
+					else:
+						cycles += 21
+				else:
+					if self.use_smc is True:
+						cycles += 19	# lda abs+x; sta abs; lda abs+x; sta abs; jmp
+					else:
+						cycles += 23
+			else:
+				cycles += CHOICE_CYCLES[denominator]
+			# Custom?
+			if denominator in jumps:#CUSTOMS and (denominator in PRIMES or denominator <= self.max_full):
+				cc = self.cycles_by_custom(numerator, denominator, True)
+				if cc is None:
+					cycles += self.cycles_by_generic(numerator, denominator)
+				else:
+					cycles += cc
+			else:
+				if self.use_factoring is True:
+					is_good, factor1, factor2 = self.factoring_is_good(denominator)
+				else:
+					is_good = False
+				if is_good is True:
+					cycles += self.cycles_by_factor(factor1, factor2)
+				else:
+					cycles += self.cycles_by_generic(numerator, denominator)
 		else:
-			if use_factoring is True:
-				is_good, factor1, factor2 = factoring_is_good(max_full, i, fallback_unrolled_subtraction, high_bit_check, inlining)
-			else:
-				is_good = False
-			if is_good is True:
-				assert(i == 9) or (i == 15)
-				factors.add(i)
-				jumps.add(i)
-				jumps.add(i*2)
-				jumps.add(i*4)
-				jumps.add(i*8)
-				jumpentries.append(f"{prefix}divide_by_{i}")
-			else:
-				max_custom_avail = min(max_custom_avail, i-1)
-				jumpentries.append(f"{prefix}use_sub_unchecked")
+			cycles += 5
 
-	# Find highest point which can be handled without the generic function
-	max_custom_avail = max(1, max_custom_avail)
+			if self.high_bit_check is True and self.early_high_bit is False:
+				cycles += self.cycles_by_high_bit(numerator, denominator)
+				if denominator >= 128:
+					return cycles
 
-	max_iters = (255 // max_custom_avail)
-	max_iters = max(low_iters_max, max_iters)
+			cycles += self.cycles_by_generic(numerator, denominator)
+		return cycles
 
-	available=True
-	# Limited by branch range to 62
-	if fallback_unrolled_subtraction is True and max_iters > 62:
-		if dry_run is True:
-			return False
-		print("WARNING: unrolled subtraction not available - branch range limited", file=sys.stderr)
-		fallback_unrolled_subtraction = False
-		available=False
-
-	if dry_run is True:
-		return True
-
-	# Transfer denominator to X on entry and/or X to denominator if needed later
-	denominator_from = denominator_from.lower()
-	if denominator_from == "x":
-		denominator_to_x = []
-		x_to_denominator = [f"{insn}stx {denominator}"]
-	elif denominator_from == "a":
-		denominator_to_x = [f"{insn}tax"]
-		x_to_denominator = [f"{insn}stx {denominator}"]
-	elif denominator_from == "y":
-		denominator_to_x = [f"{insn}tya", f"{insn}tax"]
-		x_to_denominator = [f"{insn}stx {denominator}"]
-	else:
-		denominator_to_x = [f"{insn}ldx {denominator}"]
-		x_to_denominator = []
-
-	text = []
-	text.append(f"{comment}Division, 8 / 8 bits.")
-
-	if not use_choice_tree:
-		text.append(f"{label}{prefix}entry")
-		text.extend(denominator_to_x)
-		# Early high jump
-		if early_high_bit is True:
-			text.append(f"{insn}bmi {prefix}high_bit_denom")
-
-		# Check jump vs. subtract
-		text.append(f"{insn}cpx #{max_custom+1}")
-		text.append(f"{insn}bcs {prefix}use_sub")
-
-		if half_table is True:
-			if use_smc is True:
-				text.append(f"{comment}Half SMC jump table")
-				text.append(f"{insn}lda {prefix}lowtable, x")
-				text.append(f"{insn}sta {prefix}table_jump+1")
-				text.append(f"{insn}lda {numerator}")
-				text.append(f"{label}{prefix}table_jump")
-				text.append(f"{insn}jmp {jumpentries[0]}")
-			else:
-				text.append(f"{comment}Half RTS-trick jump table")
-				text.append(f"{insn}lda #(>({jumpentries[0]}))")
-				text.append(f"{insn}pha")
-				text.append(f"{insn}lda {prefix}lowtable, x")
-				text.append(f"{insn}pha")
-				text.append(f"{insn}lda {numerator}")
-				text.append(f"{insn}rts")
+	def stats_cycles(self, jumps):
+		fast_stats = self.fast_stats
+		cycles = 0
+		clist=[]
+		cycles64 = 0
+		cycles16 = 0
+		if fast_stats:
+			total = 0
+			total64 = 0
+			total16 = 0
+			for numerator in FAST_TEST:
+				for denominator in FAST_TEST[1:]:
+					c = self.mean_cycles_numerator(numerator, denominator, jumps)
+					clist.append(c)
+					cycles += c
+					total += 1
+					if denominator <= 64:
+						cycles64 += c
+						total64 += 1
+					if denominator <= 16:
+						cycles16 += c
+						total16 += 1
 		else:
-			if use_smc is True:
-				text.append(f"{comment}SMC jump table")
-				text.append(f"{insn}lda {prefix}hightable, x")
-				text.append(f"{insn}sta {prefix}table_jump+2")
-				text.append(f"{insn}lda {prefix}lowtable, x")
-				text.append(f"{insn}sta {prefix}table_jump+1")
-				text.append(f"{insn}lda {numerator}")
-				text.append(f"{label}{prefix}table_jump")
-				text.append(f"{insn}jmp 0x8000")
-			else:
-				text.append(f"{comment}RTS-trick jump table")
-				text.append(f"{insn}lda {prefix}hightable, x")
-				text.append(f"{insn}pha")
-				text.append(f"{insn}lda {prefix}lowtable, x")
-				text.append(f"{insn}pha")
-				text.append(f"{insn}lda {numerator}")
-				text.append(f"{insn}rts")
+			total = 255*256
+			total64 = 63*256
+			total16 = 15*256
+			for numerator in range(0,256):
+				for denominator in range(1,256):
+					c = self.mean_cycles_numerator(numerator, denominator, jumps)
+					clist.append(c)
+					cycles += c
+					if denominator <= 64:
+						cycles64 += c
+					if denominator <= 16:
+						cycles16 += c
+		cycles /= total
+		cycles64 /= total64
+		cycles16 /= total16
+		clist.sort()
+		median = clist[len(clist)//2]
+		worst = clist[-1]
+		return cycles, cycles64, cycles16, median, worst
 
-	with_shifting = False
-	with_subtraction = False
+	def make_customs(self, jumps):
+		label = self.label
+		prefix = self.prefix
+		insn = self.insn
+		numerator = self.numerator
 
-	# Repeated subtraction, unrolled
-	if max_shifting_divider > 0:
-		with_shifting = True
-	if max_shifting_divider < 256:
-		with_subtraction = True
+		text = []
 
-	if with_shifting and with_subtraction:
-		text.append(f"{label}{prefix}use_sub")
-		text.append(f"{insn}cpx #{max_shifting_divider}+1")
-		# Branch to subtraction...
-		text.append(f"{insn}bcs {prefix}use_sub_unchecked")
-		# or fall through to shifting
-
-	if with_shifting:
-		if not with_subtraction:
-			text.append(f"{label}{prefix}use_sub")
-			if high_bit_check is True: # TODO are these & the only below ever doubled early?
-				text.append(f"{insn}bmi {prefix}high_bit_denom")
-			text.append(f"{label}{prefix}use_sub_unchecked")
-		text.append(f"{label}{prefix}use_shift")
-		text.append(f"{insn}lda #0")
-		text.append(f"{insn}ldx #8")
-		text.append(f"{insn}asl {numerator}")
-		text.append(f"{label}{prefix}divide_l1") 
-		text.append(f"{insn}rol")
-		text.append(f"{insn}cmp {denominator}")
-		text.append(f"{insn}bcc {prefix}divide_l2")
-		text.append(f"{insn}sbc {denominator}")
-		text.append(f"{label}{prefix}divide_l2")
-		text.append(f"{insn}rol {numerator}")
-		text.append(f"{insn}dex")
-		text.append(f"{insn}bne {prefix}divide_l1")
-		text.append(f"{insn}lda {numerator}")
-		text.append(f"{insn}rts")
-
-	# Check high bit
-	if high_bit_check is True and use_choice_tree is False:
-		text.append(f"{label}{prefix}high_bit_denom")
-		text.append(f"{insn}cpx {numerator}")
-		text.append(f"{insn}bcc {prefix}return_1")
-		text.append(f"{insn}beq {prefix}return_1")
-		# Fall thru to return 0 if unrolled
-		if fallback_unrolled_subtraction is False or with_subtraction is False:
-			text.append(f"{insn}lda #0")
-			text.append(f"{insn}rts")
-			text.append(f"{label}{prefix}return_1")
-			text.append(f"{insn}lda #1")
+		if 48 in jumps:
+			text.append(f"{label}{prefix}divide_by_48")
+			text.append(f"{insn}lsr")
+		if 24 in jumps:
+			text.append(f"{label}{prefix}divide_by_24")
+			text.append(f"{insn}lsr")
+		if 12 in jumps:
+			text.append(f"{label}{prefix}divide_by_12")
+			text.append(f"{insn}lsr")
+		if 6 in jumps:
+			text.append(f"{label}{prefix}divide_by_6")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}sta {numerator}")
+		if 3 in jumps:
+			text.append(f"{label}{prefix}divide_by_3")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc #21")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
 			text.append(f"{insn}rts")
 
-	if with_subtraction:
-		if fallback_unrolled_subtraction is True:
-			midpoint = max(low_iters_max, (max_iters - 4) // 2) # offset because for very large tables the limit is the bcs use_sub
-			if use_choice_tree:
-				midpoint = min(max_iters, 30)
-			for i in range(0, midpoint):
-				text.append(f"{label}{prefix}return_{i}")
-				text.append(f"{insn}lda #{i}")
-				#text.append(f"{insn}adc #0")
-				text.append(f"{insn}rts")
-			if not with_shifting:
-				text.append(f"{label}{prefix}use_sub")
-				#FIXME cause OOR
-				if high_bit_check is True and early_high_bit is False:
-					text.append(f"{insn}bmi {prefix}high_bit_denom")
-			text.append(f"{label}{prefix}use_sub_unchecked")
-			text.extend(x_to_denominator)
-			text.append(f"{insn}lda {numerator}")
-			text.append(f"{insn}sec")
-			for i in range(0, max_iters):
-				text.append(f"{insn}sbc {denominator}")
-				text.append(f"{insn}bcc {prefix}return_{i}")
-			text.append(f"{insn}lda #{max_iters}")
+		if 40 in jumps:
+			text.append(f"{label}{prefix}divide_by_40")
+			text.append(f"{insn}lsr")
+		if 20 in jumps:
+			text.append(f"{label}{prefix}divide_by_20")
+			text.append(f"{insn}lsr")
+		if 10 in jumps:
+			text.append(f"{label}{prefix}divide_by_10")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}sta {numerator}")
+		if 5 in jumps:
+			text.append(f"{label}{prefix}divide_by_5")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc #13")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{label}{prefix}divide_by_5_end")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
 			text.append(f"{insn}rts")
-			for i in range(midpoint, max_iters):
-				text.append(f"{label}{prefix}return_{i}")
-				text.append(f"{insn}lda #{i}")
+
+		if 56 in jumps:
+			text.append(f"{label}{prefix}divide_by_56")
+			text.append(f"{insn}lsr")
+		if 28 in jumps:
+			text.append(f"{label}{prefix}divide_by_28")
+			text.append(f"{insn}lsr")
+		if 14 in jumps:
+			text.append(f"{label}{prefix}divide_by_14")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}sta {numerator}")
+		if 7 in jumps:
+			text.append(f"{label}{prefix}divide_by_7")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			if self.inlining is True:
+				text.append(f"{insn}adc {numerator}")
+			
+				text.append(f"{insn}ror")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
 				text.append(f"{insn}rts")
+			else:
+				text.append(f"{insn}bpl {prefix}divide_by_5_end")
+
+		if 36 in jumps:
+			text.append(f"{label}{prefix}divide_by_36")
+			text.append(f"{insn}lsr")
+		if 18 in jumps:
+			text.append(f"{label}{prefix}divide_by_18")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}sta {numerator}")
+		if 9 in jumps:
+			#lsr; lsr; lsr; adc {numerator}; ror; adc {numerator}; ror; adc {numerator}; ror; lsr; lsr; lsr; 
+			text.append(f"{label}{prefix}divide_by_9")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{label}{prefix}divide_by_9_end")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}rts")
+		elif (36 in jumps or 18 in jumps) and 3 in jumps:
+			text.append(f"{label}{prefix}divide_by_9")
+			text.append(f"{insn}jsr {prefix}divide_by_3")
+			text.append(f"{insn}bpl {prefix}divide_by_3")
+
+		if 44 in jumps:
+			text.append(f"{label}{prefix}divide_by_44")
+			text.append(f"{insn}lsr")
+		if 22 in jumps:
+			text.append(f"{label}{prefix}divide_by_22")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}sta {numerator}")
+		if 11 in jumps:
+			text.append(f"{label}{prefix}divide_by_11")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			if self.inlining is True:
+				text.append(f"{insn}adc {numerator}")
+				text.append(f"{insn}ror")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}rts")
+			else:
+				text.append(f"{insn}bpl {prefix}divide_by_9_end")
+
+		if 52 in jumps:
+			text.append(f"{label}{prefix}divide_by_52")
+			text.append(f"{insn}lsr")
+		if 26 in jumps:
+			text.append(f"{label}{prefix}divide_by_26")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}sta {numerator}")
+		if 13 in jumps:
+			text.append(f"{label}{prefix}divide_by_13")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}clc")
+			if self.inlining is True:
+				text.append(f"{insn}adc {numerator}")
+				text.append(f"{insn}ror")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}rts")
+			else:
+				text.append(f"{insn}bpl {prefix}divide_by_9_end")
+
+		if 60 in jumps:
+			text.append(f"{label}{prefix}divide_by_60")
+			text.append(f"{insn}lsr")
+		if 30 in jumps:		
+			text.append(f"{label}{prefix}divide_by_30")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}sta {numerator}")
+		if 15 in jumps:
+			text.append(f"{label}{prefix}divide_by_15")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc #4")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			if self.inlining is True:
+				text.append(f"{insn}adc {numerator}")
+				text.append(f"{insn}ror")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}rts")
+			else:
+				text.append(f"{insn}jmp {prefix}divide_by_9_end")
+		elif (30 in jumps or 60 in jumps) and 3 in jumps and 5 in jumps:
+			text.append(f"{label}{prefix}divide_by_15")
+			text.append(f"{insn}jsr {prefix}divide_by_3")
+			text.append(f"{insn}bpl {prefix}divide_by_5")
+
+		if 76 in jumps:
+			text.append(f"{label}{prefix}divide_by_76")
+			text.append(f"{insn}lsr")
+		if 38 in jumps:
+			text.append(f"{label}{prefix}divide_by_38")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}sta {numerator}")
+		if 19 in jumps:
+			text.append(f"{label}{prefix}divide_by_19")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}adc {numerator}")
+			if self.inlining is True or 21 not in jumps:
+				text.append(f"{insn}ror")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}rts")
+			else:
+				text.append(f"{insn}bne {prefix}divide_by_21_end_ror")
+				# Falls through when num in 0, but the result is the same.
+
+		if 42 in jumps:
+			text.append(f"{label}{prefix}divide_by_42")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}sta {numerator}")
+		if 21 in jumps:
+			text.append(f"{label}{prefix}divide_by_21")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{label}{prefix}divide_by_21_end_adc")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{label}{prefix}divide_by_21_end_ror")
+			text.append(f"{insn}ror")
+			text.append(f"{label}{prefix}divide_by_21_end")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}rts")
+
+		if 46 in jumps:
+			text.append(f"{label}{prefix}divide_by_46")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}sta {numerator}")
+		if 23 in jumps:
+			text.append(f"{label}{prefix}divide_by_23")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			if self.inlining is True:
+				text.append(f"{insn}adc {numerator}")
+				text.append(f"{insn}ror")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}rts")
+			else:
+				text.append(f"{insn}bpl {prefix}divide_by_21_end_adc")
+
+		if 50 in jumps:
+			text.append(f"{label}{prefix}divide_by_50")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}sta {numerator}")
+		if 25 in jumps:
+			text.append(f"{label}{prefix}divide_by_25")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			if self.inlining is True:
+				text.append(f"{insn}adc {numerator}")
+				text.append(f"{insn}ror")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}rts")
+			else:
+				text.append(f"{insn}bpl {prefix}divide_by_21_end_adc")
+
+		if 54 in jumps:
+			text.append(f"{label}{prefix}divide_by_54")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}sta {numerator}")
+		if 27 in jumps:
+			text.append(f"{label}{prefix}divide_by_27")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			if self.inlining is True:
+				text.append(f"{insn}adc {numerator}")
+				text.append(f"{insn}ror")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}rts")
+			else:
+				text.append(f"{insn}bpl {prefix}divide_by_21_end_adc")
+
+		if 58 in jumps:
+			text.append(f"{label}{prefix}divide_by_58")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}sta {numerator}")
+		if 29 in jumps:
+			text.append(f"{label}{prefix}divide_by_29")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			if self.inlining is True:
+				text.append(f"{insn}adc {numerator}")
+				text.append(f"{insn}ror")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}rts")
+			else:
+				text.append(f"{insn}bpl {prefix}divide_by_21_end_adc")
+
+		if 62 in jumps:
+			text.append(f"{label}{prefix}divide_by_62")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}sta {numerator}")
+		if 31 in jumps:
+			text.append(f"{label}{prefix}divide_by_31")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			if self.inlining is True:
+				text.append(f"{insn}adc {numerator}")
+				text.append(f"{insn}ror")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}lsr")
+				text.append(f"{insn}rts")
+			else:
+				text.append(f"{insn}bpl {prefix}divide_by_21_end_adc")
+		return text
+
+	def make_powers_of_2(self, jumps, internal_div_by_0):
+		label = self.label
+		prefix = self.prefix
+		insn = self.insn
+		numerator = self.numerator
+
+		powers_of_2 = []
+		# Custom dividers
+		if 64 in jumps:
+			powers_of_2.append(f"{label}{prefix}divide_by_64")
+			powers_of_2.append(f"{insn}lsr")
+		if 32 in jumps:
+			powers_of_2.append(f"{label}{prefix}divide_by_32")
+			powers_of_2.append(f"{insn}lsr")
+			if self.inlining is True:
+				powers_of_2.append(f"{insn}lsr")
+				powers_of_2.append(f"{insn}lsr")
+				powers_of_2.append(f"{insn}lsr")
+				powers_of_2.append(f"{insn}lsr")
+				powers_of_2.append(f"{insn}rts")
+			else:
+				powers_of_2.append(f"{insn}bpl {prefix}divide_by_16")
+
+		if 34 in jumps:
+			powers_of_2.append(f"{label}{prefix}divide_by_34")
+			powers_of_2.append(f"{insn}lsr")
+			powers_of_2.append(f"{insn}sta {numerator}")
+		if 17 in jumps:
+			powers_of_2.append(f"{label}{prefix}divide_by_17")
+			powers_of_2.append(f"{insn}lsr")
+			powers_of_2.append(f"{insn}adc {numerator}")
+			powers_of_2.append(f"{insn}ror")
+			powers_of_2.append(f"{insn}adc {numerator}")
+			powers_of_2.append(f"{insn}ror")
+			powers_of_2.append(f"{insn}adc {numerator}")
+			powers_of_2.append(f"{insn}ror")
+			powers_of_2.append(f"{insn}adc #0")
+
+		if 16 in jumps:
+			powers_of_2.append(f"{label}{prefix}divide_by_16")
+			powers_of_2.append(f"{insn}lsr")
+		if 8 in jumps:
+			powers_of_2.append(f"{label}{prefix}divide_by_8")
+			powers_of_2.append(f"{insn}lsr")
+		if 4 in jumps:
+			powers_of_2.append(f"{label}{prefix}divide_by_4")
+			powers_of_2.append(f"{insn}lsr")
+		if 2 in jumps:
+			powers_of_2.append(f"{label}{prefix}divide_by_2")
+			powers_of_2.append(f"{insn}lsr")
+		powers_of_2.append(f"{label}{prefix}divide_by_1")
+		if internal_div_by_0 is True:
+			powers_of_2.append(f"{label}{prefix}divide_by_0")
+			powers_of_2.append(f"{insn}rts")
 		else:
-			# Repeated subtraction, rolled
-			if not with_shifting:
-				text.append(f"{label}{prefix}use_sub")
-			if high_bit_check is True and early_high_bit is False:
-				text.append(f"{insn}bmi {prefix}high_bit_denom")
-			text.append(f"{label}{prefix}use_sub_unchecked")
-			text.extend(x_to_denominator)
-			text.append(f"{insn}lda {numerator}")
+			powers_of_2.append(f"{insn}rts")
+			powers_of_2.append(f"{label}{prefix}divide_by_0")
+			if self.error_vector is True:
+				powers_of_2.append(f"{insn}jmp ({divide_by_0})")
+			else:
+				powers_of_2.append(f"{insn}jmp {divide_by_0}")
+		return powers_of_2
+
+	# Make a constant denominator divider.
+	# This uses a custom routine if available, otherwise a subtraction loop.
+	# This doesn't accept any variations and always goes from numerator A, return A
+	# 
+	def make_constant_divider(self, denom):
+		assert(denom > 0)
+		assert(denom < 256)
+		jumps = set()
+		for i in range(0,8):
+			jumps.add(denom >> i)
+			if (denom >> i) & 1 == 1:
+				break
+		self.inlining = True
+		self.factoring = False
+		text = []
+		if denom in (0, 1, 2, 4, 8, 16, 17, 32, 34, 64, 68):
+			text = self.make_powers_of_2(jumps, True)
+		else:
+			if denom <= 76:
+				text = self.make_customs(jumps)
+
+		# No custom? Use a subtract loop
+		if len(text) == 0:
+			label = self.label
+			prefix = self.prefix
+			insn = self.insn
+			text.append(f"{label}{prefix}divide_by_{denom}")
 			text.append(f"{insn}ldx #255")
 			text.append(f"{insn}sec")
 			text.append(f"{label}{prefix}use_sub_loop")
-			text.append(f"{insn}sbc {denominator}")
+			text.append(f"{insn}sbc #{denom}")
 			text.append(f"{insn}inx")
 			text.append(f"{insn}bcs {prefix}use_sub_loop")
 			text.append(f"{insn}txa")
 			text.append(f"{insn}rts")
 
-	# Custom dividers
-	if 64 in jumps:
-		text.append(f"{label}{prefix}divide_by_64")
-		text.append(f"{insn}lsr")
-	if 32 in jumps:
-		text.append(f"{label}{prefix}divide_by_32")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}bpl {prefix}divide_by_16")
+		return self.get_size_and_stats(text, jumps, True)
 
-#			17: ror; sbc {numerator}; lsr; lsr; lsr; adc {numerator}; lsr; lsr; lsr; lsr;  (22 cycles, 12 bytes)
-#			13: lsr; lsr; sbc {numerator}; lsr; lsr; lsr; adc {numerator}; lsr; lsr; adc {numerator}; ror; lsr; lsr; lsr;  (31 cycles, 17 bytes)
-#			11: lsr; lsr; sbc {numerator}; lsr; lsr; lsr; adc {numerator}; lsr; adc {numerator}; ror; lsr; lsr; lsr;  (29 cycles, 16 bytes)
-#			bad? sec? 9:  lsr; lsr; lsr; sbc {numerator}; lsr; lsr; ror; adc {numerator}; lsr; lsr; lsr;  (24 cycles, 13 bytes)
-	if 34 in jumps:
-		text.append(f"{label}{prefix}divide_by_34")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 17 in jumps:
-		text.append(f"{label}{prefix}divide_by_17")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}adc #0")
+	# The main entry point: see top of file for documentation
+	def make_divide(self, dry_run=False):
+		max_custom = self.max_custom
+		early_high_bit = self.early_high_bit
 
-	if 16 in jumps:
-		text.append(f"{label}{prefix}divide_by_16")
-		text.append(f"{insn}lsr")
-	if 8 in jumps:
-		text.append(f"{label}{prefix}divide_by_8")
-		text.append(f"{insn}lsr")
-	if 4 in jumps:
-		text.append(f"{label}{prefix}divide_by_4")
-		text.append(f"{insn}lsr")
-	if 2 in jumps:
-		text.append(f"{label}{prefix}divide_by_2")
-		text.append(f"{insn}lsr")
-	text.append(f"{label}{prefix}divide_by_1")
-	if internal_div_by_0 is True:
-		text.append(f"{label}{prefix}divide_by_0")
-	text.append(f"{insn}rts")
-
-	if use_choice_tree is True:
-		text.append(f"{label}{prefix}entry")
-		text.extend(denominator_to_x)
-		# Early high jump
-		if early_high_bit is True:
-			text.append(f"{insn}bmi {prefix}high_bit_denom")
-
-		# Check jump vs. subtract
-		text.append(f"{insn}cpx #{max_custom+1}")
-		text.append(f"{insn}bcs {prefix}use_sub")
-
-		# Jump table (or choice tree) dispatch
-		# Jumps to use_sub will always bypass high bit check
-		if max_custom == 2:
-			text.append(f"{insn}lda muldiv_temp_t")
-			text.append(f"{insn}cpx #1")
-			text.append(f"{insn}beq {prefix}divide_by_1")
-			text.append(f"{insn}bcs {prefix}divide_by_2")
-			text.append(f"{insn}bcc {prefix}divide_by_0")
-		elif max_custom == 3:
-			text.append(f"{insn}lda muldiv_temp_t")
-			text.append(f"{insn}cpx #2")
-			text.append(f"{insn}bcc {prefix}divide_by_1_0")
-			text.append(f"{insn}beq {prefix}divide_by_2")
-			text.append(f"{insn}bne {prefix}divide_by_3")
-			text.append(f"{label}{prefix}divide_by_1_0")
-			text.append(f"{insn}cpx #1")
-			text.append(f"{insn}beq {prefix}divide_by_1")
-			text.append(f"{insn}bne {prefix}divide_by_0")
-		elif max_custom == 4:
-			text.append(f"{insn}lda muldiv_temp_t")
-			text.append(f"{insn}cpx #3")
-			text.append(f"{insn}bcc {prefix}divide_by_2_0")
-			text.append(f"{insn}beq {prefix}divide_by_3")
-			text.append(f"{insn}bne {prefix}divide_by_4")
-			text.append(f"{label}{prefix}divide_by_2_0")
-			text.append(f"{insn}cpx #1")
-			text.append(f"{insn}beq {prefix}divide_by_1")
-			text.append(f"{insn}bcc {prefix}divide_by_0")
-			text.append(f"{insn}bcs {prefix}divide_by_2")
-		elif max_custom == 5:
-			text.append(f"{insn}lda muldiv_temp_t")
-			text.append(f"{insn}cpx #3")
-			text.append(f"{insn}bcc {prefix}divide_by_2_0")
-			text.append(f"{insn}beq {prefix}divide_by_3")
-			text.append(f"{insn}cpx #4")
-			text.append(f"{insn}beq {prefix}divide_by_4")
-			text.append(f"{insn}bne {prefix}divide_by_5")
-			text.append(f"{label}{prefix}divide_by_2_0")
-			text.append(f"{insn}cpx #1")
-			text.append(f"{insn}beq {prefix}divide_by_1")
-			text.append(f"{insn}bcc {prefix}divide_by_0")
-			text.append(f"{insn}bcs {prefix}divide_by_2")
-		elif max_custom == 6:
-			text.append(f"{insn}lda muldiv_temp_t")
-			text.append(f"{insn}cpx #3")
-			text.append(f"{insn}bcc {prefix}divide_by_2_0")
-			text.append(f"{insn}beq {prefix}divide_by_3")
-			text.append(f"{insn}cpx #5")
-			text.append(f"{insn}beq {prefix}divide_by_5")
-			text.append(f"{insn}bcc {prefix}divide_by_4")
-			text.append(f"{insn}bcs {prefix}divide_by_6")
-			text.append(f"{label}{prefix}divide_by_2_0")
-			text.append(f"{insn}cpx #1")
-			text.append(f"{insn}beq {prefix}divide_by_1")
-			text.append(f"{insn}bcc {prefix}divide_by_0")
-			text.append(f"{insn}bcs {prefix}divide_by_2")
-		elif max_custom == 7:
-			text.append(f"{insn}lda muldiv_temp_t")
-			text.append(f"{insn}cpx #4")
-			text.append(f"{insn}bcs {prefix}divide_by_3_0")
-			text.append(f"{insn}beq {prefix}divide_by_4")
-			text.append(f"{insn}cpx #6")
-			text.append(f"{insn}beq {prefix}divide_by_6")
-			text.append(f"{insn}bcc {prefix}divide_by_5")
-			text.append(f"{insn}bcs {prefix}divide_by_7")
-			text.append(f"{label}{prefix}divide_by_3_0")
-			text.append(f"{insn}cpx #2")
-			text.append(f"{insn}beq {prefix}divide_by_2")
-			text.append(f"{insn}bcs {prefix}divide_by_3")
-			text.append(f"{insn}cpx #0")
-			text.append(f"{insn}beq {prefix}divide_by_0")
-			text.append(f"{insn}bne {prefix}divide_by_2")
+		if dry_run:
+			if (self.max_full > self.max_custom) or (self.early_high_bit and not self.high_bit_check) or (self.max_full < 0):
+				return False
 		else:
-			print("WARNING: choice tree not available with this size table", file=sys.stderr)
-			use_choice_tree = False
-			available=False
-		# Check high bit
-		if high_bit_check is True:
-			text.append(f"{label}{prefix}high_bit_denom")
-			text.append(f"{insn}cpx {numerator}")
-			text.append(f"{insn}bcc {prefix}hdreturn_1")
-			text.append(f"{insn}beq {prefix}hdreturn_1")
-			text.append(f"{insn}lda #0")
-			text.append(f"{insn}rts")
-			text.append(f"{label}{prefix}hdreturn_1")
-			text.append(f"{insn}lda #1")
-			text.append(f"{insn}rts")
-		
-	else:
-		if half_table:
-			# Align text.append(f"!do while >( * + {len(jumpentries)} ) != >* {{ nop }}")
-			low, lb = ("low", "<")
-			text.append(f"{label}{prefix}{low}table")
-			for entry in jumpentries:
-				if use_smc:
-					text.append(f"{equb} {lb}({entry})")
+			assert self.max_full <= max_custom
+			assert (self.high_bit_check or not early_high_bit)
+
+		if max_custom < 2 and self.high_bit_check is True and early_high_bit is False:
+			if dry_run is True:
+				return False
+			early_high_bit = True
+			print("WARNING: late high bit not available for max_custom < 2")
+
+		choice_tree = self.use_choice_tree
+
+		# FIXME: make 6/7 usable or remove them
+		if max_custom >= 5 and choice_tree is True:
+			if dry_run is True:
+				return False
+			choice_tree = False
+			avail = False
+			print("WARNING: choice_tree not available for max_custom >= 5")
+
+		low_iters_max = 0
+		if self.high_bit_check is True and self.fallback_unrolled_subtraction is True:
+			low_iters_max = 2
+
+		# Reduce if there is wasted space at the top of the table
+		while max_custom not in CUSTOMS:
+			max_custom -= 1
+
+		# Build a table of jumps - determine which are available
+		jumps = set()
+		for i in range(0, max_custom+1):
+			jumps.add(i)
+			if i > 1:
+				for j in range(1, 7):
+					if (i*(1<<j)) <= self.max_full:
+						jumps.add(i*(1<<j))
+
+		fallback_unrolled_subtraction = self.fallback_unrolled_subtraction
+		divide_by_0 = self.divide_by_0
+		prefix = self.prefix
+
+		# Determine the divide by 0 address
+		internal_div_by_0 = False
+		if divide_by_0 is None:
+			internal_div_by_0 = True
+			divide_by_0 = f"{prefix}divide_by_0"
+
+		# Jump table - make entries
+		factors = set()
+		jumpentries = []
+		jumpentries.append(f"{prefix}divide_by_0")
+		max_custom_avail = max_custom
+		has_jump_to_sub = False
+		for i in range(1, max_custom+1):
+			if i in CUSTOMS and (i in PRIMES or i <= self.max_full):
+				jumpentries.append(f"{prefix}divide_by_{i}")
+			else:
+				if self.use_factoring is True:
+					is_good, factor1, factor2 = self.factoring_is_good(i)
 				else:
-					text.append(f"{equb} {lb}({entry}-1)")
+					is_good = False
+				if is_good is True:
+					assert(i in {9,15})
+					factors.add(i)
+					jumps.add(i)
+					jumps.add(i*2)
+					jumps.add(i*4)
+					jumps.add(i*8)
+					jumpentries.append(f"{prefix}divide_by_{i}")
+				else:
+					max_custom_avail = min(max_custom_avail, i-1)
+					has_jump_to_sub = True
+					jumpentries.append(f"{prefix}use_sub_bounce")
+
+		# Find highest point which can be handled without the generic function
+		max_custom_avail = max(1, max_custom_avail)
+
+		max_iters = (255 // max_custom_avail)
+		max_iters = max(low_iters_max, max_iters)
+
+		with_shifting = False
+		with_subtraction = False
+
+		# Repeated subtraction, unrolled
+		if self.max_shifting_divider > 0:
+			with_shifting = True
+		if self.max_shifting_divider < 256:
+			with_subtraction = True
+
+		# Half tables limit the targets to the first page
+		# That's always OK if not inlining and there are no non-custom jumps
+		# Otherwise have limits
+		use_sub_bounce = False
+		if self.half_table is True:
+			if self.inlining is True:
+				max_limit = 30
+				if has_jump_to_sub is True:
+					max_limit = 28
+					if (with_shifting and with_subtraction):
+						max_limit = 25
+				if self.use_smc is True:
+					max_limit -= 1
+			else:
+				max_limit = 64
+				if has_jump_to_sub is True:
+					max_limit = 34
+					if (with_shifting and with_subtraction):
+						max_limit = 29
+					if self.use_smc is True:
+						max_limit -= 1
+			if fallback_unrolled_subtraction is True:
+				max_limit -= 1
+			if max_custom > max_limit:
+				if dry_run is True:
+					return False
+				# FIXME log, or set a return fn?
+				print(f"WARNING: max custom denominator exceeds the limit of {max_limit} for half-tables with these args (inlining, shifting vs subtraction as fallback and whether there are gaps in the table all affect it.", file=sys.stderr)
+				max_custom = max_limit
+				available=False
+			table_limit = 0
+			# Account for the extra size of the JMP to external divide by 0
+			if internal_div_by_0 is False:
+				table_limit = 7
+			if (max_limit - max_custom) - ((table_limit + max_iters) // 4) < 0:
+				use_sub_bounce = True
+
+		available=True
+		# Limited by branch range to 62
+		if fallback_unrolled_subtraction is True and max_iters > 62:
+			if dry_run is True:
+				return False
+			print("WARNING: unrolled subtraction not available - branch range limited", file=sys.stderr)
+			fallback_unrolled_subtraction = False
+			available=False
+
+		denominator_from = self.denominator_from
+		numerator_from = self.numerator_from
+		assert(denominator_from != numerator_from or denominator_from == "memory")
+		assert(denominator_from in REG_MEM_SOURCES)
+		assert(numerator_from in REG_MEM_SOURCES)
+		denominator_from = self.denominator_from.lower()
+		if denominator_from == "x" and early_high_bit is True:
+			if dry_run is True:
+				return False
+			print("WARNING: early_high_bit not available with denominator in X", file=sys.stderr)
+			early_high_bit = False
+			available=False
+
+		if dry_run is True:
+			return True
+
+		label = self.label
+		prefix = self.prefix
+		insn = self.insn
+		equb = self.equb
+		comment = self.comment
+		denominator = self.denominator
+		numerator = self.numerator
+
+		nonp2_customs = self.make_customs(jumps)
+
+		# Transfer denominator to X on entry and/or X to denominator if needed later
+		if denominator_from == "x":
+			denominator_to_x = []
+			x_to_denominator = [f"{insn}stx {denominator}"]
+		elif denominator_from == "a":
+			denominator_to_x = [f"{insn}tax"]
+			x_to_denominator = [f"{insn}stx {denominator}"]
+		elif denominator_from == "y":
+			denominator_to_x = [f"{insn}tya", f"{insn}tax"]
+			x_to_denominator = [f"{insn}stx {denominator}"]
 		else:
-			for lh in ( ("low", "<"), ("high", ">") ):
-				low, lb = lh
+			denominator_to_x = [f"{insn}ldx {denominator}"]
+			x_to_denominator = []
+
+		# Transfer numerator to memory on entry
+		numerator_to_mem = []
+		if numerator_from == "x":
+			numerator_to_mem = [f"{insn}stx {numerator}"]
+		elif numerator_from == "a":
+			numerator_to_mem = [f"{insn}sta {numerator}"]
+		elif numerator_from == "y":
+			numerator_to_mem = [f"{insn}sty {numerator}"]
+
+		# Use a wrapper if not returning in A
+		# The wrapper calls _wrapped_entry, then does something (from the wrapper[] list) and then returns.
+		wrapper = []
+		if self.result_to == 'x':
+			wrapper.append(f"{insn}tax")
+		elif self.result_to == 'y':
+			wrapper.append(f"{insn}tay")
+		elif self.result_to == 'denominator':
+			wrapper.append(f"{insn}sta {denominator}")
+		elif self.result_to == 'numerator':
+			wrapper.append(f"{insn}sta {numerator}")
+		elif self.result_to == 'a':
+			pass
+		else:
+			print("WARNING: unrecognized return location, defaulting to A")
+
+		text = []
+		text.append(f"{comment}Division, 8 / 8 bits.")
+		# FIXME args from comment?
+
+		powers_of_2 = self.make_powers_of_2(jumps, internal_div_by_0)
+
+		if self.half_table is True:
+			if self.use_smc is False:# and max_custom == max_limit:
+				text.append(f"{insn}nop") # Prevent a ff in the table - FIXME ""
+			#if self.use_smc is False and max_custom < max_limit:
+				
+			text.extend(powers_of_2)
+			text.extend(nonp2_customs)
+
+		cpx_branch = []
+		if max_custom == 0:
+			if denominator_from == "x":
+				cpx_branch.append(f"{insn}cpx #0")
+			cpx_branch.append(f"{insn}bne {prefix}use_sub")
+		else:
+			cpx_branch.append(f"{insn}cpx #{max_custom+1}")
+			cpx_branch.append(f"{insn}bcs {prefix}use_sub")
+
+		if use_sub_bounce is True:
+			text.append(f"{label}{prefix}use_sub_bounce")
+			text.append(f"{insn}bcc {prefix}use_sub_unchecked")
+
+		if not choice_tree:
+			if len(wrapper) > 0:
+				text.append(f"{label}{prefix}wrapped_entry")
+			else:
+				text.append(f"{label}{prefix}entry")
+			text.extend(numerator_to_mem)
+			text.extend(denominator_to_x)
+			# Early high jump
+			if early_high_bit is True and denominator_from != "x":
+				text.append(f"{insn}bmi {prefix}high_bit_denom")
+
+			# Check jump vs. subtract
+			text.extend(cpx_branch)
+
+			if self.half_table is True:
+				if self.use_smc is True:
+					text.append(f"{comment}Half SMC jump table")
+					text.append(f"{insn}lda {prefix}lowtable, x")
+					text.append(f"{insn}sta {prefix}table_jump+1")
+					text.append(f"{insn}lda {numerator}")
+					text.append(f"{label}{prefix}table_jump")
+					text.append(f"{insn}jmp {jumpentries[0]}")
+				else:
+					text.append(f"{comment}Half RTS-trick jump table")
+					text.append(f"{insn}lda #(>({jumpentries[0]}))")
+					text.append(f"{insn}pha")
+					text.append(f"{insn}lda {prefix}lowtable, x")
+					text.append(f"{insn}pha")
+					text.append(f"{insn}lda {numerator}")
+					text.append(f"{insn}rts")
+			else:
+				if self.use_smc is True:
+					text.append(f"{comment}SMC jump table")
+					text.append(f"{insn}lda {prefix}hightable, x")
+					text.append(f"{insn}sta {prefix}table_jump+2")
+					text.append(f"{insn}lda {prefix}lowtable, x")
+					text.append(f"{insn}sta {prefix}table_jump+1")
+					text.append(f"{insn}lda {numerator}")
+					text.append(f"{label}{prefix}table_jump")
+					text.append(f"{insn}jmp 0x8000")
+				else:
+					text.append(f"{comment}RTS-trick jump table")
+					text.append(f"{insn}lda {prefix}hightable, x")
+					text.append(f"{insn}pha")
+					text.append(f"{insn}lda {prefix}lowtable, x")
+					text.append(f"{insn}pha")
+					text.append(f"{insn}lda {numerator}")
+					text.append(f"{insn}rts")
+
+		high_check = []
+		high_check.append(f"{label}{prefix}high_bit_denom")
+		high_check.append(f"{insn}cpx {numerator}")
+		high_check.append(f"{insn}bcc {prefix}return_1")
+		high_check.append(f"{insn}beq {prefix}return_1")
+		# Fall thru to return 0 if unrolled
+		if fallback_unrolled_subtraction is False or with_subtraction is False or max_custom < 2:
+			high_check.append(f"{insn}lda #0")
+			high_check.append(f"{insn}rts")
+			high_check.append(f"{label}{prefix}return_1")
+			high_check.append(f"{insn}lda #1")
+			high_check.append(f"{insn}rts")
+
+		high_bit_early = False
+		# Check high bit
+		if self.high_bit_check is True and max_custom < 2:
+			text.extend(high_check)
+			high_bit_early = True
+
+		if with_shifting and with_subtraction:
+			text.append(f"{label}{prefix}use_sub")
+			text.append(f"{insn}cpx #{self.max_shifting_divider}+1")
+			# Branch to subtraction...
+			text.append(f"{insn}bcs {prefix}use_sub_unchecked")
+			# or fall through to shifting
+
+		if with_shifting:
+			if not with_subtraction:
+				text.append(f"{label}{prefix}use_sub")
+				if self.high_bit_check is True: # TODO are these & the only below ever doubled early?
+					text.append(f"{insn}bmi {prefix}high_bit_denom")
+				if use_sub_bounce is False:
+					text.append(f"{label}{prefix}use_sub_bounce")
+				text.append(f"{label}{prefix}use_sub_unchecked")
+			text.append(f"{label}{prefix}use_shift")
+			text.extend(x_to_denominator)
+			text.append(f"{insn}lda #0")
+			text.append(f"{insn}ldx #8")
+			text.append(f"{insn}asl {numerator}")
+			text.append(f"{label}{prefix}divide_l1")
+			text.append(f"{insn}rol")
+			text.append(f"{insn}cmp {denominator}")
+			text.append(f"{insn}bcc {prefix}divide_l2")
+			text.append(f"{insn}sbc {denominator}")
+			text.append(f"{label}{prefix}divide_l2")
+			text.append(f"{insn}rol {numerator}")
+			text.append(f"{insn}dex")
+			text.append(f"{insn}bne {prefix}divide_l1")
+			text.append(f"{insn}lda {numerator}")
+			text.append(f"{insn}rts")
+
+		# Check high bit
+		if self.high_bit_check is True and (self.use_choice_tree is False or max_custom >= 2) and high_bit_early is False:
+			text.extend(high_check)
+			high_bit_early = True
+
+		if with_subtraction:
+			if fallback_unrolled_subtraction is True:
+				midpoint = max(low_iters_max, (max_iters - 4) // 2) # offset because for very large tables the limit is the bcs use_sub
+				if choice_tree:
+					midpoint = min(max_iters, 30)
+				for i in range(0, midpoint):
+					text.append(f"{label}{prefix}return_{i}")
+					text.append(f"{insn}lda #{i}")
+					text.append(f"{insn}rts")
+				if not with_shifting:
+					text.append(f"{label}{prefix}use_sub")
+					#FIXME cause OOR
+					if self.high_bit_check is True and self.early_high_bit is False:
+						text.append(f"{insn}bmi {prefix}high_bit_denom")
+				if use_sub_bounce is False:
+					text.append(f"{label}{prefix}use_sub_bounce")
+				text.append(f"{label}{prefix}use_sub_unchecked")
+				text.extend(x_to_denominator)
+				text.append(f"{insn}lda {numerator}")
+				text.append(f"{insn}sec")
+				for i in range(0, max_iters):
+					text.append(f"{insn}sbc {denominator}")
+					text.append(f"{insn}bcc {prefix}return_{i}")
+				text.append(f"{insn}lda #{max_iters}")
+				text.append(f"{insn}rts")
+				for i in range(midpoint, max_iters):
+					text.append(f"{label}{prefix}return_{i}")
+					text.append(f"{insn}lda #{i}")
+					text.append(f"{insn}rts")
+			else:
+				# Repeated subtraction, rolled
+				if not with_shifting:
+					text.append(f"{label}{prefix}use_sub")
+				if self.high_bit_check is True and self.early_high_bit is False:
+					text.append(f"{insn}bmi {prefix}high_bit_denom")
+				if use_sub_bounce is False:
+					text.append(f"{label}{prefix}use_sub_bounce")
+				text.append(f"{label}{prefix}use_sub_unchecked")
+				text.extend(x_to_denominator)
+				text.append(f"{insn}lda {numerator}")
+				text.append(f"{insn}ldx #255")
+				text.append(f"{insn}sec")
+				text.append(f"{label}{prefix}use_sub_loop")
+				text.append(f"{insn}sbc {denominator}")
+				text.append(f"{insn}inx")
+				text.append(f"{insn}bcs {prefix}use_sub_loop")
+				text.append(f"{insn}txa")
+				text.append(f"{insn}rts")
+
+		if self.half_table is False:
+			if max_custom >= 2:
+				text.extend(powers_of_2)
+
+		if choice_tree is True:
+			if len(wrapper) > 0:
+				text.append(f"{label}{prefix}wrapped_entry")
+			else:
+				text.append(f"{label}{prefix}entry")
+			text.extend(numerator_to_mem)
+			text.extend(denominator_to_x)
+
+			# Early high jump
+			if early_high_bit is True and denominator_from != "x":
+				text.append(f"{insn}bmi {prefix}high_bit_denom")
+
+			# Check jump vs. subtract
+			text.extend(cpx_branch)
+
+			# Jump table (or choice tree) dispatch
+			# Jumps to use_sub will always bypass high bit check
+			if max_custom <= 1:
+				text.append(f"{insn}lda {numerator}")
+			elif max_custom == 2:
+				text.append(f"{insn}lda {numerator}")
+				text.append(f"{insn}cpx #1")
+				text.append(f"{insn}beq {prefix}divide_by_1")
+				text.append(f"{insn}bcs {prefix}divide_by_2")
+				if internal_div_by_0:
+					text.append(f"{insn}rts")
+				else:
+					text.append(f"{insn}bcc {prefix}divide_by_0")
+			elif max_custom == 3:
+				text.append(f"{insn}lda {numerator}")
+				text.append(f"{insn}cpx #2")
+				text.append(f"{insn}bcc {prefix}divide_by_1_0")
+				text.append(f"{insn}beq {prefix}divide_by_2")
+				text.append(f"{insn}bne {prefix}divide_by_3")
+				text.append(f"{label}{prefix}divide_by_1_0")
+				text.append(f"{insn}cpx #1")
+				text.append(f"{insn}beq {prefix}divide_by_1")
+				if internal_div_by_0:
+					text.append(f"{insn}rts")
+				else:
+					text.append(f"{insn}bne {prefix}divide_by_0")
+			elif max_custom == 4:
+				text.append(f"{insn}lda {numerator}")
+				text.append(f"{insn}cpx #3")
+				text.append(f"{insn}bcc {prefix}divide_by_2_0")
+				text.append(f"{insn}beq {prefix}divide_by_3")
+				text.append(f"{insn}bne {prefix}divide_by_4")
+				text.append(f"{label}{prefix}divide_by_2_0")
+				text.append(f"{insn}cpx #1")
+				text.append(f"{insn}beq {prefix}divide_by_1")
+				text.append(f"{insn}bcs {prefix}divide_by_2")
+				if internal_div_by_0:
+					text.append(f"{insn}rts")
+				else:
+					text.append(f"{insn}bcc {prefix}divide_by_0")
+			elif max_custom == 5:
+				text.append(f"{insn}lda {numerator}")
+				text.append(f"{insn}cpx #3")
+				text.append(f"{insn}bcc {prefix}divide_by_2_0")
+				text.append(f"{insn}beq {prefix}divide_by_3")
+				text.append(f"{insn}cpx #4")
+				text.append(f"{insn}beq {prefix}divide_by_4")
+				text.append(f"{insn}bne {prefix}divide_by_5")
+				text.append(f"{label}{prefix}divide_by_2_0")
+				text.append(f"{insn}cpx #1")
+				text.append(f"{insn}beq {prefix}divide_by_1")
+				text.append(f"{insn}bcs {prefix}divide_by_2")
+				if internal_div_by_0:
+					text.append(f"{insn}rts")
+				else:
+					text.append(f"{insn}bcc {prefix}divide_by_0")
+			elif max_custom == 6:
+				text.append(f"{insn}lda {numerator}")
+				text.append(f"{insn}cpx #3")
+				text.append(f"{insn}bcc {prefix}divide_by_2_0")
+				text.append(f"{insn}beq {prefix}divide_by_3")
+				text.append(f"{insn}cpx #5")
+				text.append(f"{insn}beq {prefix}divide_by_5")
+				text.append(f"{insn}bcc {prefix}divide_by_4")
+				text.append(f"{insn}bcs {prefix}divide_by_6")
+				text.append(f"{label}{prefix}divide_by_2_0")
+				text.append(f"{insn}cpx #1")
+				text.append(f"{insn}beq {prefix}divide_by_1")
+				text.append(f"{insn}bcs {prefix}divide_by_2")
+				if internal_div_by_0:
+					text.append(f"{insn}rts")
+				else:
+					text.append(f"{insn}bcc {prefix}divide_by_0")
+			elif max_custom == 7:
+				text.append(f"{insn}lda {numerator}")
+				text.append(f"{insn}cpx #4")
+				text.append(f"{insn}bcs {prefix}divide_by_3_0")
+				text.append(f"{insn}beq {prefix}divide_by_4")
+				text.append(f"{insn}cpx #6")
+				text.append(f"{insn}beq {prefix}divide_by_6")
+				text.append(f"{insn}bcc {prefix}divide_by_5")
+				text.append(f"{insn}bcs {prefix}divide_by_7")
+				text.append(f"{label}{prefix}divide_by_3_0")
+				text.append(f"{insn}cpx #2")
+				text.append(f"{insn}beq {prefix}divide_by_2")
+				text.append(f"{insn}bcs {prefix}divide_by_3")
+				text.append(f"{insn}cpx #0")
+				text.append(f"{insn}bne {prefix}divide_by_2")
+				if internal_div_by_0:
+					text.append(f"{insn}rts")
+				else:
+					text.append(f"{insn}beq {prefix}divide_by_0")
+			else:
+				print("WARNING: choice tree not available with this size table", file=sys.stderr)
+				use_choice_tree = False
+				available=False
+			# Check high bit
+			if self.high_bit_check is True and high_bit_early is False:
+				text.extend(high_check)
+				high_bit_early = True
+
+		else:
+			if self.half_table:
+				# Align text.append(f"!do while >( * + {len(jumpentries)} ) != >* {{ nop }}")
+				low, lb = ("low", "<")
 				text.append(f"{label}{prefix}{low}table")
 				for entry in jumpentries:
-					if use_smc:
+					if self.use_smc:
 						text.append(f"{equb} {lb}({entry})")
 					else:
 						text.append(f"{equb} {lb}({entry}-1)")
-
-	if 48 in jumps:
-		text.append(f"{label}{prefix}divide_by_48")
-		text.append(f"{insn}lsr")
-	if 24 in jumps:
-		text.append(f"{label}{prefix}divide_by_24")
-		text.append(f"{insn}lsr")
-	if 12 in jumps:
-		text.append(f"{label}{prefix}divide_by_12")
-		text.append(f"{insn}lsr")
-	if 6 in jumps:
-		text.append(f"{label}{prefix}divide_by_6")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 3 in jumps:
-		text.append(f"{label}{prefix}divide_by_3")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc #21")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}rts")
-
-	if 40 in jumps:
-		text.append(f"{label}{prefix}divide_by_40")
-		text.append(f"{insn}lsr")
-	if 20 in jumps:
-		text.append(f"{label}{prefix}divide_by_20")
-		text.append(f"{insn}lsr")
-	if 10 in jumps:
-		text.append(f"{label}{prefix}divide_by_10")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 5 in jumps:
-		text.append(f"{label}{prefix}divide_by_5")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc #13")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{label}{prefix}divide_by_5_end")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}rts")
-
-	if 56 in jumps:
-		text.append(f"{label}{prefix}divide_by_56")
-		text.append(f"{insn}lsr")
-	if 28 in jumps:
-		text.append(f"{label}{prefix}divide_by_28")
-		text.append(f"{insn}lsr")
-	if 14 in jumps:
-		text.append(f"{label}{prefix}divide_by_14")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 7 in jumps:
-		text.append(f"{label}{prefix}divide_by_7")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		if inlining is True:
-			text.append(f"{insn}adc {numerator}")
-		
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}rts")
-		else:
-			text.append(f"{insn}bpl {prefix}divide_by_5_end")
-
-	if 36 in jumps:
-		text.append(f"{label}{prefix}divide_by_36")
-		text.append(f"{insn}lsr")
-	if 18 in jumps:
-		text.append(f"{label}{prefix}divide_by_18")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 9 in jumps:
-		text.append(f"{label}{prefix}divide_by_9")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{label}{prefix}divide_by_9_end")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}rts")
-	elif 3 in jumps:
-		text.append(f"{label}{prefix}divide_by_9")
-		text.append(f"{insn}jsr {prefix}divide_by_3")
-		text.append(f"{insn}bpl {prefix}divide_by_3")
-
-	if 44 in jumps:
-		text.append(f"{label}{prefix}divide_by_44")
-		text.append(f"{insn}lsr")
-	if 22 in jumps:
-		text.append(f"{label}{prefix}divide_by_22")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 11 in jumps:
-		text.append(f"{label}{prefix}divide_by_11")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		if inlining is True:
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}rts")
-		else:
-			text.append(f"{insn}bpl {prefix}divide_by_9_end")
-
-	if 52 in jumps:
-		text.append(f"{label}{prefix}divide_by_52")
-		text.append(f"{insn}lsr")
-	if 26 in jumps:
-		text.append(f"{label}{prefix}divide_by_26")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 13 in jumps:
-		text.append(f"{label}{prefix}divide_by_13")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}clc")
-		if inlining is True:
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}rts")
-		else:
-			text.append(f"{insn}bpl {prefix}divide_by_9_end")
-
-	if 60 in jumps:
-		text.append(f"{label}{prefix}divide_by_60")
-		text.append(f"{insn}lsr")
-	if 30 in jumps:		
-		text.append(f"{label}{prefix}divide_by_30")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 15 in jumps:
-		text.append(f"{label}{prefix}divide_by_15")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc #4")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		if inlining is True:
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}rts")
-		else:
-			text.append(f"{insn}jmp {prefix}divide_by_9_end")
-	elif 3 in jumps and 5 in jumps:
-		text.append(f"{label}{prefix}divide_by_15")
-		text.append(f"{insn}jsr {prefix}divide_by_3")
-		text.append(f"{insn}bpl {prefix}divide_by_5")
-
-	if 76 in jumps:
-		text.append(f"{label}{prefix}divide_by_76")
-		text.append(f"{insn}lsr")
-	if 38 in jumps:
-		text.append(f"{label}{prefix}divide_by_38")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 19 in jumps:
-		text.append(f"{label}{prefix}divide_by_19")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}adc {numerator}")
-		if inlining is True or 21 not in jumps:
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}rts")
-		else:
-			text.append(f"{insn}bne {prefix}divide_by_21_end_ror")
-			# Falls through when num in 0, but the result is the same.
-
-	if 42 in jumps:
-		text.append(f"{label}{prefix}divide_by_42")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 21 in jumps:
-		text.append(f"{label}{prefix}divide_by_21")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{label}{prefix}divide_by_21_end_adc")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{label}{prefix}divide_by_21_end_ror")
-		text.append(f"{insn}ror")
-		text.append(f"{label}{prefix}divide_by_21_end")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}rts")
-
-	if 46 in jumps:
-		text.append(f"{label}{prefix}divide_by_46")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 23 in jumps:
-		text.append(f"{label}{prefix}divide_by_23")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		if inlining is True:
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}rts")
-		else:
-			text.append(f"{insn}bpl {prefix}divide_by_21_end_adc")
-
-	if 50 in jumps:
-		text.append(f"{label}{prefix}divide_by_50")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 25 in jumps:
-		text.append(f"{label}{prefix}divide_by_25")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		if inlining is True:
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}rts")
-		else:
-			text.append(f"{insn}bpl {prefix}divide_by_21_end_adc")
-
-	if 54 in jumps:
-		text.append(f"{label}{prefix}divide_by_54")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 27 in jumps:
-		text.append(f"{label}{prefix}divide_by_27")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		if inlining is True:
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}rts")
-		else:
-			text.append(f"{insn}bpl {prefix}divide_by_21_end_adc")
-
-	if 58 in jumps:
-		text.append(f"{label}{prefix}divide_by_58")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 29 in jumps:
-		text.append(f"{label}{prefix}divide_by_29")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}adc {numerator}")
-		text.append(f"{insn}ror")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		if inlining is True:
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}rts")
-		else:
-			text.append(f"{insn}bpl {prefix}divide_by_21_end_adc")
-
-	if 62 in jumps:
-		text.append(f"{label}{prefix}divide_by_62")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}sta {numerator}")
-	if 31 in jumps:
-		text.append(f"{label}{prefix}divide_by_31")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		text.append(f"{insn}lsr")
-		if inlining is True:
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}rts")
-		else:
-			text.append(f"{insn}bpl {prefix}divide_by_21_end_adc")
-
-	if half_table is True:
-		for entry in jumpentries[1:]:
-			text.append('!if (>('+f"{jumpentries[0]})) != (>({entry})) {{ !warn "+f'"Half RTS not possible with these parameters ({jumpentries[0]} vs {entry})" }}')
-
-	# Analyze size
-	size=0
-	sizes = [
-		(f"{insn}lsr", 1),
-		(f"{insn}asl", 1),
-		(f"{insn}clc", 1),
-		(f"{insn}sec", 1),
-		(f"{insn}txa", 1),
-		(f"{insn}tax", 1),
-		(f"{insn}in", 1),
-		(f"{insn}de", 1),
-		(f"{insn}ror", 1),
-		(f"{insn}rol", 1),
-		(f"{insn}pha", 1),
-		(f"{insn}rts", 1),
-		(f"{insn}adc", 2),
-		(f"{insn}sbc", 2),
-		(f"{insn}b", 2),
-		(f"{insn}j", 3),
-		(f"{equb}", 1),
-		(f"{insn}ld", 2),
-		(f"{insn}st", 2),
-		(f"{insn}cp", 2),
-		(f"{insn}cmp", 2),
-		(f"{comment}", 0),
-		(f"{label}", 1),
-	]
-	for line in text:
-		ok=False
-		for match in sizes:
-			string, ilen = match
-			if line[:len(string)] == string:
-				size += ilen
-				ok=True
-				break
-		if not ok:
-			print(f"Not recognized, {line}", file=sys.stderr)
-
-	if with_stats is True:
-		mean,mean64,mean16,median,worst=stats_cycles(max_custom, max_full, fallback_unrolled_subtraction, high_bit_check, early_high_bit, inlining, use_factoring, use_choice_tree, max_shifting_divider)
-	else:
-		mean,mean64,mean16,median,worst=(0,0,0,0,0)
-	text.append("")
-	return (available, "\n".join(text), mean,mean64,mean16,median,worst, size)
-
-def save(text, filename, num, denom):
-	testname = filename
-	preamble = f"\ndef proc divide_{filename}\n[\n"
-	epilog = "\n]\n"
-	filename = f"dividers.asm"
-	with open(filename,"a") as file:
-		file.write(preamble)
-		file.write(text)
-		file.write(epilog)
-	test = f'\n[[test]]\nname="Hash Divide {testname}"'
-	test = test + """
-timeout=20000000
-reps=65536
-null="Hash Divide Null"
-source=\"\"\"
-dim i 1
-dim j 1
-dim k 1
-object_top_cell_y = 1
-i = 0
-label outer_loop
-j = 0
-label inner_loop
-"""
-	test = test + f"{num} = i\n"
-	test = test + f"{denom} = j\n"
-	test = test + "k = proc divide_"
-	test = test + testname
-	test = test + """ ()
-proc measure_byte k
-j = j + 1
-if j <> 0 then goto inner_loop
-i = i + 1
-if i <> 0 then goto outer_loop
-object_top_cell_y = 2
-\"\"\"
-pass=\"\"\"
-hash 1a3fb879c6c939fa1cbc4e40b6acfd0053611efa3f1fd0bca497a329520bb58d80da36694e0102bd90a6ec48d3f292ec1c27509484a95f91da59785af954efa7
-object_top_cell_y 2
-\"\"\"
-"""
-	with open("./tmp/tests-div.toml","a") as file:
-		file.write(test)
-
-def add_line(i, j, fwith, iwith, cwith, max_shifting_divider, half_table, use_smc, sub, hibit, size, mean, mean64, mean16, median, worst, emean, emean64, emean16, emedian, eworst, mean_list, mean_64_list, mean_16_list, median_list, worst_list, emean_list, emean_64_list, emean_16_list, emedian_list, eworst_list, full_list, with_stats, string, fname, numerator, denominator, emulation_result, emulate):
-	emtext = ""
-	emcycles = 2000
-	trace=None
-	if emulate is True:
-		if emulation_result is None:
-			emtext="Failed!"
-		else:
-			if isinstance(emulation_result, str):
-				emtext=emulation_result
 			else:
-				mismatch, divisor, dividend, cycles, trace = emulation_result
-				if mismatch is True:
-					emtext=f"{divisor}/{dividend}"
-				elif divisor == -1:
-					emtext=f"{cycles[0]:7.5}"
-					emcycles = cycles[0]
+				for lh in ( ("low", "<"), ("high", ">") ):
+					low, lb = lh
+					text.append(f"{label}{prefix}{low}table")
+					for entry in jumpentries:
+						if self.use_smc:
+							text.append(f"{equb} {lb}({entry})")
+						else:
+							text.append(f"{equb} {lb}({entry}-1)")
+
+		if self.half_table is False:
+			if max_custom < 2:
+				text.extend(powers_of_2)
+			text.extend(nonp2_customs)
+
+		if self.half_table is True:
+			for entry in jumpentries[1:]:
+				if self.use_smc:
+					text.append('!if (>('+f"{jumpentries[0]})) != (>({entry})) {{ !warn "+f'"Half pointer not possible for SMC with these parameters ({jumpentries[0]} vs {entry})" }}')
 				else:
-					emtext=f"{divisor}!{dividend}"
-	twith = "No"
-	if half_table is True:
-		twith = "Yes"
-	swith = "No"
-	if use_smc is True:
-		swith = "Yes"
-	line = f"|{i:6}|{j:6}|{fwith:6}|{iwith:6}|{sub:6}|{hibit:6}|{cwith:6}|{max_shifting_divider:6}|{twith:6}|{swith:6}|{size:6}|"
-	if with_stats is True:
-		line = f"{line}{float(mean):7.5}|{float(mean64):7.5}|{float(mean16):7.5}|{median:6}|{float(worst):7.5}|"
-		bad = False
+					text.append('!if (>('+f"{jumpentries[0]}-1)) != (>({entry}-1)) {{ !warn "+f'"Half pointer not possible for RTS with these parameters ({jumpentries[0]} vs {entry})" }}')
+
+		if len(wrapper) > 0:
+			text.append(f"{label}{prefix}entry")
+			text.append(f"{insn}jsr wrapped_entry")
+			text.extend(wrapper)
+			text.append(f"{insn}rts")
+
+		return self.get_size_and_stats(text, jumps, available)
+
+	def get_size_and_stats(self, text, jumps, available):
+		insn = self.insn
+		equb = self.equb
+		comment = self.comment
+		label = self.label
+		# Analyze size
+		size=0
+		sizes = [
+			(f"{insn}lsr", 1),
+			(f"{insn}asl", 1),
+			(f"{insn}clc", 1),
+			(f"{insn}sec", 1),
+			(f"{insn}txa", 1),
+			(f"{insn}tax", 1),
+			(f"{insn}in", 1),
+			(f"{insn}de", 1),
+			(f"{insn}ror", 1),
+			(f"{insn}rol", 1),
+			(f"{insn}pha", 1),
+			(f"{insn}rts", 1),
+			(f"{insn}adc", 2),
+			(f"{insn}sbc", 2),
+			(f"{insn}b", 2),
+			(f"{insn}j", 3),
+			(f"{equb}", 1),
+			(f"{insn}ld", 2),
+			(f"{insn}st", 2),
+			(f"{insn}cp", 2),
+			(f"{insn}cmp", 2),
+			(f"{comment}", 0),
+			(f"{label}", 0),
+		]
+		for line in text:
+			ok=False
+			for match in sizes:
+				string, ilen = match
+				if line[:len(string)] == string:
+					size += ilen
+					ok=True
+					break
+			if not ok:
+				print(f"Instruction not recognized, {line}", file=sys.stderr)
+
+		if self.with_stats is True:
+			mean,mean64,mean16,median,worst=self.stats_cycles(jumps)
+		else:
+			mean,mean64,mean16,median,worst=(0,0,0,0,0)
+		text.append("")
+		return (available, "\n".join(text), mean,mean64,mean16,median,worst, size)
+
+	# Return true if the set of args is acceptable
+	def try_make_divide(self):
+		return self.make_divide(dry_run=True)
+
+	def do_make_divide(self):
+		num = self.numerator
+		denom = self.denominator
+		equb = "!byte"
+		comment = "; "
+		label = ""
+
+		avail, string, cycles, m64, m16, median, worst, size = self.make_divide()
+
+		result = None
+		binary = None
+		emulation_result = None
+		ecycles = BAD_CYCLES
+		em64 = BAD_CYCLES
+		em16 = BAD_CYCLES
+		emedian = BAD_CYCLES
+		eworst = BAD_CYCLES
+		if self.assemble is True:
+			prolog=f"{num}=0\n{denom}=1\n* = $200\n"
+			if self.emulate is True:
+				prolog = prolog + f"jsr {self.prefix}entry\njmp $bcde\n" 
+			if self.divide_by_0 is not None:
+				prolog = prolog + f"{self.divide_by_0}\n\tjmp $cdef\n"
+			if self.emulate is True:
+				prolog = prolog + "* = $300"
+			with tempfile.NamedTemporaryFile('w') as infile:
+				src = "\n\n".join([prolog, string])
+				infile.write(src)
+				infilename = infile.name
+				infile.flush()
+				filesize = 0
+				with tempfile.NamedTemporaryFile('rb') as outfile:
+					with tempfile.NamedTemporaryFile('r') as reportfile:
+						result = subprocess.run(["acme", "-v2", "-o", outfile.name, "-r", reportfile.name, infilename], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True).stdout
+						filesize =os.path.getsize(outfile.name)
+						report = reportfile.read()
+						binary = f"Binary output {filesize} bytes\n" + "Source:\n" + src + "\n\nReport:\n" + report
+						if self.emulate is True:
+							error = "Error" in result
+							notposs = NOT_POSS in result
+							if filesize > 0 and not (error or notposs):
+								emulation_result = run_emulator(outfile.name, filesize, denominator_from=self.denominator_from, numerator_from=self.numerator_from, result_to=self.result_to, fast_stats=self.fast_stats, random_stats=self.random_stats)
+								if isinstance(emulation_result, tuple) and isinstance(emulation_result[3], tuple):
+									ecycles, em64, em16, emedian, eworst = emulation_result[3]
+							elif filesize > 0 and (error or notposs):
+								if error is True:
+									emulation_result = "Asm Err"
+								else:
+									emulation_result = "HalfTab"
+							else:
+								emulation_result = "No File"
+		self.result = (result, binary, avail, string, cycles, m64, m16, median, worst, ecycles, em64, em16, emedian, eworst, size, emulation_result)
+		return self
+
+	def add_line(self, stat):
+		result, binary, avail, string, mean, mean64, mean16, median, worst, emean, emean64, emean16, emedian, eworst, size, emulation_result = self.result
+		prefix = self.prefix
+		style = self.style
+		first = self.first
+		emulate = self.emulate
+
+		com_words = []
+		com_words.append(f"-c{self.max_custom}")
+		com_words.append(f"-f{self.max_full}")
+
+		cwith = "No"
+		if self.use_choice_tree is True:
+			com_words.append("-T")
+			cwith = "Yes" 
+			style = style + "_c"
+		fwith = "No"
+		if self.use_factoring is True:
+			com_words.append("-F")
+			fwith = "Yes" 
+			style = style + "_f"
+		iwith = "No"
+		if self.inlining is True:
+			com_words.append("-I")
+			iwith = "Yes" 
+			style = style + "_i"
+		style = style + f"_s{self.max_shifting_divider}"
+		uwith = "No"
+		if self.fallback_unrolled_subtraction is True:
+			com_words.append("-u")
+			uwith = "Yes"
+			style = style + "_u"
+		hwith = "No"
+		if self.high_bit_check is True:
+			hwith = "Late"
+			if self.early_high_bit is True:
+				hwith = "Early"
+				style = style + "_e"
+				com_words.append("-V")
+			else:
+				style = style + "_l"
+				com_words.append("-B")
+
+		if self.max_shifting_divider != 0:
+			com_words.append(f"-S {self.max_shifting_divider}")
+
+		twith="No"
+		if self.half_table is True:
+			com_words.append("-H")
+			twith="Yes"
+
+		swith="No"
+		if self.use_smc is True:
+			com_words.append("-M")
+			swith="Yes"
+
+		if self.divide_by_0 is not None:
+			 com_words.append(f"-0 d")
+
+		command = " ".join(com_words)
+
+		emtext = ""
+		emcycles = BAD_CYCLES
+		trace=None
 		if emulate is True:
-			line = f"{line}{float(emean):7.5}|{float(emean64):7.5}|{float(emean16):7.5}|{emedian:6}|{float(eworst):7.5}|"
+			if emulation_result is None:
+				emtext="Failed!"
+			else:
+				if isinstance(emulation_result, str):
+					emtext=emulation_result
+				else:
+					mismatch, divisor, dividend, cycles, trace = emulation_result
+					if mismatch is True:
+						emtext=f"{divisor}/{dividend}"
+					elif divisor == -1:
+						emtext=f"{cycles[0]:7.5}"
+						emcycles = cycles[0]
+					else:
+						emtext=f"{divisor}!{dividend}"
+
+		line = f"|{self.max_custom:6}|{self.max_full:6}|{fwith:6}|{iwith:6}|{uwith:6}|{hwith:6}|{cwith:6}|{self.max_shifting_divider:6}|{twith:6}|{swith:6}|{size:6}|{command.ljust(MAX_COMMAND)}|"
+		bad = False
+		if self.with_stats is True:
+			line = f"{line[:-(1+MAX_COMMAND)]}{float(mean):7.5}|{float(mean64):7.5}|{float(mean16):7.5}|{median:6}|{float(worst):7.5}|{command.ljust(MAX_COMMAND)}|"
+
+		if self.emulate is True:
+			line = f"{line[:-(1+MAX_COMMAND)]}{float(emean):7.5}|{float(emean64):7.5}|{float(emean16):7.5}|{emedian:6}|{float(eworst):7.5}|{command.ljust(MAX_COMMAND)}|"
 			bad = True
-			#line = line + f"{emtext:7}|"
 			if isinstance(emulation_result, tuple):
 				if isinstance(emulation_result[3], tuple):
 					emean, emean64, emean16, emedian, eworst = emulation_result[3]
-					emean_list.append((emean, emean64, emean16, eworst, emedian, size, line))
-					emean_64_list.append((emean64, emean16, emean, eworst, emedian, size, line))
-					emean_16_list.append((emean16, emean64, emean, eworst, emedian, size, line))
-					emedian_list.append((emedian, eworst, emean, mean64, emean16, size, line))
-					eworst_list.append((eworst, emean, emean64, emean, emedian, size, line))
+					stat["emean"].append((emean, emean64, emean16, eworst, emedian, size, line))
+					stat["emean64"].append((emean64, emean16, emean, eworst, emedian, size, line))
+					stat["emean16"].append((emean16, emean64, emean, eworst, emedian, size, line))
+					stat["emedian"].append((emedian, eworst, emean, mean64, emean16, size, line))
+					stat["eworst"].append((eworst, emean, emean64, emean, emedian, size, line))
 					bad = False
+
 		if not bad:
-			mean_list.append((mean, mean64, mean16, worst, median, size, line))
-			mean_64_list.append((mean64, mean16, mean, worst, median, size, line))
-			mean_16_list.append((mean16, mean64, mean, worst, median, size, line))
-			median_list.append((median, worst, mean, mean64, mean16, size, line))
-			worst_list.append((worst, mean, mean64, mean, median, size, line))
-	else:
-		line = f"|{i:6}|{j:6}|{fwith:6}|{iwith:6}|{sub:6}|{hibit:6}|{cwith:6}|{max_shifting_divider:6}|{size:6}|"
-		if emulate:
-			line = line + f"{emtext:7}|"
-	full_list.append(line)
-	save(string, fname, numerator, denominator)
-	return trace
+			stat["mean"].append((mean, mean64, mean16, worst, median, size, line))
+			stat["mean64"].append((mean64, mean16, mean, worst, median, size, line))
+			stat["mean16"].append((mean16, mean64, mean, worst, median, size, line))
+			stat["median"].append((median, worst, mean, mean64, mean16, size, line))
+			stat["worst"].append((worst, mean, mean64, mean, median, size, line))
+
+
+		stat["full"].append(line)
+		return trace
 
 def add_title(name, slist, args):
 	dbar=    "+============================================================================+"
@@ -1255,6 +1701,10 @@ def add_title(name, slist, args):
 		dbar = dbar[:-1] + "=======================================+"
 		title1= title1   + "Emulate|Mea<=64|Mea<=16|Median|Worst  |"
 		title2= title2   + "Mea/Err|cycles |cycles |cycles|cycles |"
+	dbar = dbar[:-1] + f"{'='*(MAX_COMMAND+1)}+"
+	title1= title1   + f"{'Command line to generate'.center(MAX_COMMAND)}|"
+	title2= title2   + f"{' '*(MAX_COMMAND)}|"
+	
 	slist.append(dbar)
 	slist.append(f"|{name.center(len(dbar)-2)}|")
 	slist.append(dbar)
@@ -1297,16 +1747,14 @@ def blended_best_time(lists):
 		indexl.append((vsum, 0, 0, 0, 0, size, k))
 	return best_time(indexl)
 
-# Return true if the set of args is acceptable
-def try_make_divide(args):
-	i, j, _, factoring, inlining, _, choice_tree, max_shifting_divider, half_table, use_smc, stats, _, unrolled, high_bit, early_high_bit, _, _, _ = args
-	return make_divide(i, j, "", "", "", "", "", "", "", max_shifting_divider=max_shifting_divider, half_table=half_table, use_smc=use_smc, use_choice_tree=choice_tree, use_factoring=factoring, inlining=inlining, with_stats=stats, fallback_unrolled_subtraction=unrolled, high_bit_check=high_bit, early_high_bit=early_high_bit, dry_run=True)
-
 # Run the emulator on the given file and size.
-# Load at 0x200, repeatedly call it and verify correctness
-def run_emulator(filename, size, tracy=False, num=0, denom=0, denominator_from="memory"):
+# Load, repeatedly call it and verify correctness and time taken.
+def run_emulator(filename, size, tracy=False, num=0, denom=0, denominator_from="memory", numerator_from="memory", result_to="a", fast_stats=False, random_stats=0):
 	from py65emu.cpu import CPU
 	from py65emu.mmu import MMU, ReadOnlyError
+
+	global FULL_CASES
+	global FAST_CASES
 
 	trace = None
 	if tracy is True:
@@ -1317,10 +1765,19 @@ def run_emulator(filename, size, tracy=False, num=0, denom=0, denominator_from="
 	total_16_cycles = 0
 	cycle_list=[]
 
+	total_64_cases = 0
+	total_16_cases = 0
+	if fast_stats is False and random_stats == 0:
+		total_cases = 255*256
+		total_64_cases = 63*256
+		total_16_cases = 15*256
+
 	# Each tuple is (start_address, length, readOnly=True, value=None, valueOffset=0)
 	# Value is a file pointer, binary value or list of unsigned integers (*not* a single integer)
 	# May not overlap
 	load_address = 0x200
+	num_addr = 0
+	denom_addr=1
 	with open(filename, "rb") as file:
 		mmu = MMU([
 			(0, 				load_address,					False,	[0] * load_address),						# ZP and Stack, zero fill
@@ -1331,158 +1788,177 @@ def run_emulator(filename, size, tracy=False, num=0, denom=0, denominator_from="
 		# Start the CPU at the entry point
 		cpu = CPU(mmu, load_address)
 
-		# For all divisor, dividend pairs:
-		for divisor in range(num, 256):
-			for dividend in range(denom, 256):
-				# Set up - write params
-				mmu.write(0, divisor)
-				if denominator_from == "x":
-					cpu.r.x = dividend
-				elif denominator_from == "y":
-					cpu.r.y = dividend
-				elif denominator_from == "a":
-					cpu.r.a = dividend
-				else:
-					mmu.write(1, dividend)
+		# For all numerator, denominator pairs:
+		numrange = range(num, 256)
+		denomrange = range(denom, 256)
+		if len(FULL_CASES) == 0:
+			FULL_CASES = []
+			for num in numrange:
+				for denom in denomrange:
+					FULL_CASES.append((denom, num))
+		cases = FULL_CASES
+		if fast_stats is True:
+			numrange = FAST_TEST
+			denomrange = FAST_TEST[1:]
+			if len(FAST_CASES) == 0:
+				FAST_CASES = []
+				for num in numrange:
+					for denom in denomrange:
+						FAST_CASES.append((denom, num))
+			cases = FAST_CASES
+		elif isinstance(random_stats, int):
+			if random_stats > 0:
+				samples = random.sample(range(256,256*256), random_stats)
+				random_stats = []
+				for case in samples:
+					random_stats.append((case // 256, case % 256))
+		if not isinstance(random_stats, int):
+			cases = random_stats
+		for case in cases:
+			denominator, numerator = case
+			# Set up - write params
+			cpu.r.a = 0
+			cpu.r.y = 0
+			cpu.r.x = 0
+			if numerator_from == "x":
+				cpu.r.x = numerator
+				mmu.write(num_addr, 0)
+			elif numerator_from == "y":
+				cpu.r.y = numerator
+				mmu.write(num_addr, 0)
+			elif numerator_from == "a":
+				cpu.r.a = numerator
+				mmu.write(num_addr, 0)
+			else:
+				mmu.write(num_addr, numerator)
+			if denominator_from == "x":
+				cpu.r.x = denominator
+				mmu.write(denom_addr, 0)
+			elif denominator_from == "y":
+				cpu.r.y = denominator
+				mmu.write(denom_addr, 0)
+			elif denominator_from == "a":
+				cpu.r.a = denominator
+				mmu.write(denom_addr, 0)
+			else:
+				mmu.write(denom_addr, denominator)
+			if tracy is True:
+				trace = [ f"{numerator} / {denominator}" ]
+
+			# Main emulation loop
+			cycles = 0
+			cpu.r.pc = load_address
+			try:
 				if tracy is True:
-					trace = [ f"{divisor} / {dividend}" ]
-
-				# Main emulation loop
-				cycles = 0
-				cpu.r.pc = load_address
-				try:
-					if tracy is True:
-						while cycles < 2000 and cpu.r.pc < 0x8000:
-							cpu.step()
-							cycles += cpu.cc
-							trace.append((copy.deepcopy(cpu.r), mmu.read(0), mmu.read(1)))
-					else:
-						while cycles < 2000 and cpu.r.pc < 0x8000:
-							cpu.step()
-							cycles += cpu.cc
-				except ReadOnlyError:
-					# Like a timeout, but can be distinguished by the cycle count
-					return (False, divisor, dividend, cycles, None)
-
-				# Left loop - timeout?
-				if cycles >= 2000:
-					return (False, divisor, dividend, cycles, None)
-
-				# Not timeout
-				# Value is in A. Is it correct?
-				result = cpu.r.a
-				if dividend <= 1:
-					wanted = divisor
+					while cycles < BAD_CYCLES and cpu.r.pc < 0x8000:
+						cpu.step()
+						cycles += cpu.cc
+						trace.append((copy.deepcopy(cpu.r), mmu.read(0), mmu.read(1)))
 				else:
-					wanted = divisor // dividend
+					while cycles < BAD_CYCLES and cpu.r.pc < 0x8000:
+						cpu.step()
+						cycles += cpu.cc
+			except ReadOnlyError:
+				# Like a timeout, but can be distinguished by the cycle count
+				return (False, numerator, denominator, cycles, None)
+
+			# Left loop - timeout?
+			if cycles >= BAD_CYCLES:
+				return (False, numerator, denominator, cycles, None)
+
+			# Not timeout
+			# Div by zero?
+			if cpu.r.pc == 0xcdef and denominator == 0:
+				# Expected
+				pass
+			else:
+
+				# Value is in A etc. Is it correct?
+				if result_to == "a":
+					result = cpu.r.a
+				elif result_to == "x":
+					result = cpu.r.x
+				elif result_to == "y":
+					result = cpu.r.y
+				elif result_to == "denominator":
+					result = mmu.read(denom_addr)
+				elif result_to == "numerator":
+					result = mmu.read(num_addr)
+					
+				if denominator <= 1:
+					wanted = numerator
+				else:
+					wanted = numerator // denominator
 
 				# No, fail early
 				if result != wanted:
 					if tracy is False:
-						return run_emulator(filename, size, True, divisor, dividend)
-					else:
-						strace = str(trace)
-						last = 0
-						start = 0
-						newtrace = []
-						# Convert "F: 01010101" to "NVC" format
-						while True:
-							last = start
-							start = strace.find("P: ", start)
-							if start == -1:
-								newtrace.append(strace[last:])
-								break
-							newtrace.append(strace[last:start])
-							flags = strace[start+3:start+11]
-							start += 11
-							neg = "-"
-							if flags[0] == "1":
-								neg = "N"
-							over = "-"
-							if flags[1] == "1":
-								over = "V"
-							zero = "-"
-							if flags[6] == "1":
-								zero = "Z"
-							carry = "-"
-							if flags[7] == "1":
-								carry = "C"
-							newtrace.append(f"F: {neg}{over}{zero}{carry}")
-						return (True, divisor, dividend, cycles, "".join(newtrace))
-				
-				# OK
-				if dividend > 0:
-					total_cycles += cycles
-					if dividend <= 64:
-						total_64_cycles += cycles
-						if dividend <= 16:
-							total_16_cycles += cycles
-				cycle_list.append(cycles)
+						return run_emulator(filename, size, True, numerator, denominator, denominator_from, numerator_from, result_to, fast_stats, random_stats)
+					strace = str(trace)
+					last = 0
+					start = 0
+					newtrace = []
+					# Convert "F: 01010101" to "NVC" format
+					while True:
+						last = start
+						start = strace.find("P: ", start)
+						if start == -1:
+							newtrace.append(strace[last:])
+							break
+						newtrace.append(strace[last:start])
+						flags = strace[start+3:start+11]
+						start += 11
+						neg = "-"
+						if flags[0] == "1":
+							neg = "N"
+						over = "-"
+						if flags[1] == "1":
+							over = "V"
+						zero = "-"
+						if flags[6] == "1":
+							zero = "Z"
+						carry = "-"
+						if flags[7] == "1":
+							carry = "C"
+						newtrace.append(f"F: {neg}{over}{zero}{carry}")
+					return (True, numerator, denominator, cycles, "".join(newtrace))
+			
+			# OK
+			if denominator > 0:
+				total_cycles += cycles
+				if denominator <= 64:
+					total_64_cycles += cycles
+					if denominator <= 16:
+						total_16_cycles += cycles
+			if fast_stats is True or random_stats != 0:
+				#total_cases += 1
+				if denominator <= 64:
+					total_64_cases += 1
+					if denominator <= 16:
+						total_16_cases += 1
+			cycle_list.append(cycles)
 
 		# All successful - return mean, mean64, mean16, median, worstcase
 		offset = 3	# 3 cycles overhead, for JMP to exit. (JSR-RTS is included with estimate)
 		cycle_list.sort()
-		stats = ( (total_cycles / (256*255)) - offset, (total_64_cycles / (256*63)) - offset, (total_16_cycles / (256*15)) - offset, cycle_list[len(cycle_list)//2] - offset, cycle_list[-1] - offset )
+		stats = ( (total_cycles / (len(cycle_list))) - offset, (total_64_cycles / (total_64_cases)) - offset, (total_16_cycles / (total_16_cases)) - offset, cycle_list[len(cycle_list)//2] - offset, cycle_list[-1] - offset )
 		return (False, -1, -1, stats, None)
 
-def do_make_divide(args):
-	num = "muldiv_temp_t"
-	denom = "muldiv_temp_u"
-	equb = "!byte"
-	comment = "; "
-	label = ""
-
-	i, j, prefix, factoring, inlining, style, choice_tree, max_shifting_divider, half_table, use_smc, stats, assemble, unrolled, high_bit, early_high_bit, first, emulate, denominator_from = args
-	avail, string, cycles, m64, m16, median, worst, size = make_divide(i, j, num, denom, prefix, "\t", label, equb, comment, max_shifting_divider=max_shifting_divider, half_table=half_table, use_smc=use_smc, use_choice_tree=choice_tree, use_factoring=factoring, inlining=inlining, with_stats=stats, fallback_unrolled_subtraction=unrolled, high_bit_check=high_bit, early_high_bit=early_high_bit, denominator_from=denominator_from)
-
-	result = None
-	binary = None
-	emulation_result = None
-	ecycles = 2000
-	em64 = 2000
-	em16 = 2000
-	emedian = 2000
-	eworst = 2000
-	if assemble is True:
-		prolog=f"{num}=0\n{denom}=1\n* = $200\n"
-		if emulate is True:
-			prolog = prolog + f"jsr {prefix}entry\njmp $bcde" 
-		with tempfile.NamedTemporaryFile('w') as infile:
-			src = "\n\n".join([prolog, string])
-			infile.write(src)
-			infilename = infile.name
-			infile.flush()
-			filesize = 0
-			with tempfile.NamedTemporaryFile('rb') as outfile:
-				with tempfile.NamedTemporaryFile('r') as reportfile:
-					result = subprocess.run(["acme", "-v2", "-o", outfile.name, "-r", reportfile.name, infilename], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True).stdout
-					filesize =os.path.getsize(outfile.name)
-					report = reportfile.read()
-					binary = f"Binary output {filesize} bytes\n" + "Source:\n" + src + "\n\nReport:\n" + report
-					if emulate is True:
-						error = "Error" in result
-						notposs = NOT_POSS in result
-						if filesize > 0 and not (error or notposs):
-							emulation_result = run_emulator(outfile.name, filesize, denominator_from=denominator_from)
-							if isinstance(emulation_result, tuple) and isinstance(emulation_result[3], tuple):
-								ecycles, em64, em16, emedian, eworst = emulation_result[3]
-						elif filesize > 0 and (error or notposs):
-							if error is True:
-								emulation_result = "Asm Err"
-							else:
-								emulation_result = "HalfTab"
-						else:
-							emulation_result = "No File"
-			
-	return (i, j, prefix, factoring, inlining, style, choice_tree, max_shifting_divider, half_table, use_smc, unrolled, high_bit, early_high_bit, result, binary, \
-			avail, string, cycles, m64, m16, median, worst, ecycles, em64, em16, emedian, eworst, size, first, emulation_result)
-
 def single(args):
-	avail, string, m256, m64, m16, median, worst, size = make_divide(args.max_custom, args.max_full, args.numerator, args.denominator, args.prefix, args.instruction, args.label, args.equb, args.comment, max_shifting_divider=args.max_shifting, half_table=args.half_table, use_smc=args.self_modifying, use_choice_tree=args.choice_tree, use_factoring=args.factoring, inlining=args.inlining, with_stats=args.stats)
+	divi = Divider(max_custom=args.max_custom, max_full=args.max_full, prefix=args.prefix, use_factoring=args.factoring, inlining=args.inlining, \
+									use_choice_tree=args.choice_tree, max_shifting_divider=args.max_shifting, half_table=args.half_table, \
+									use_smc=args.self_modifying, with_stats=args.stats, assemble=args.assemble, fallback_unrolled_subtraction=args.unroll, \
+									high_bit_check=args.high_bit, early_high_bit=args.early_high_bit, emulate=args.emulate, \
+									denominator_from=args.denominator_from, numerator_from=args.numerator_from, result_to=args.result_to, fast_stats=args.fast_stats, \
+									random_stats = args.random_stats, divide_by_0=args.divide_by_zero, error_vector=args.error_vector, known_denominator=args.known_denominator)
+	if divi.known_denominator is not None:
+		avail, string, m256, m64, m16, median, worst, size = divi.make_constant_divider(divi.known_denominator)
+	else:
+		avail, string, m256, m64, m16, median, worst, size = divi.make_divide()
 	# Report stats
-	print(f"Divider generated. Size {size} bytes.")
+	print(f"Divider generated. Size {size} bytes.", file=sys.stderr)
 	if args.stats is True:
-		print(f"Cycles: {m256:.5} mean, {m64:.5} for denominators <=64, {m16:.5} for <=16, {median} median, {float(worst):.5} worst case.")
+		print(f"Estimated Cycles: {m256:.5} mean, {m64:.5} for denominators <=64, {m16:.5} for <=16, {median} median, {float(worst):.5} worst case.", file=stderr)
 	if isinstance(args.output, str):
 		with open(args.output,"w") as file:
 			file.write(string)
@@ -1492,42 +1968,72 @@ def single(args):
 def main():
 	parser = argparse.ArgumentParser(
 			prog='makedivide',
-			description='A parameterizable division routine builder for 6502')
+			description='A parameterizable division routine builder for 6502',
+			epilog="Examples: TODO")
+
+	parser.add_argument('-o', '--output', default=sys.stdout, help="file to output to (stats from a test mode, otherwise code)")
 
 	# Formatting
-	parser.add_argument('-n', '--numerator', default="muldiv_temp_t", help="label of the zero page location containing the numerator")
-	parser.add_argument('-d', '--denominator', default="muldiv_temp_u", help="label of the zero page location containing the denominator")
-	parser.add_argument('-e', '--equb', default="!byte", help="prefix to assemble a literal byte")
-	parser.add_argument('-i', '--instruction', default='\t', help='prefix to instructions (e.g. \\t)')
-	parser.add_argument('-l', '--label', default='.', help='prefix to labels (e.g. ".")')
-	parser.add_argument('-C', '--comment', default=';', help='prefix to comments (e.g. "#")')
-	parser.add_argument('-p', '--prefix', default='divide_', help='prefix to labels and calls (e.g. "divi_")')
+	format_group = parser.add_argument_group("Formatting", "Formatting parameters, for compatibility with different assemblers. The defaults are for ACME.")
+	format_group.add_argument('-e', '--equb', default="!byte", help="prefix to assemble a literal byte")
+	format_group.add_argument('-i', '--instruction', default='\t', help='prefix to instructions (e.g. \\t)')
+	format_group.add_argument('-l', '--label', default='', help='prefix to labels (e.g. ".")')
+	format_group.add_argument('-C', '--comment', default=';', help='prefix to comments (e.g. "#")')
+	format_group.add_argument('-p', '--prefix', default='divide_', help='prefix to labels and calls (e.g. "divi_")')
 
-	# Parameters for prducing a single instance
-	parser.add_argument('-o', '--output', default=sys.stdout, help="file to output to")
-	parser.add_argument('-c', '--max-custom', type=int, default=18, help="maximum denominator to use a custom routine")
-	parser.add_argument('-f', '--max-full', type=int, default=18, help="maximum denominator to use a custom routine that is not just a prefix to another")
-	parser.add_argument('-I', '--inlining', action='store_true', help="use inlining (less space, but slower)")
-	parser.add_argument('-F', '--factoring', action='store_true', help="use factoring (faster for a few cases, but bigger)")
-	parser.add_argument('-T', '--choice-tree', action='store_true', help="use a choice tree if possible (faster and usually smaller, for low --max-custom)")
-	parser.add_argument('-S', '--max-shifting', type=int, default=0, help="maximum denominator to use the shifting divider as a fallback when over max-custom. 0 = never use it, 256=always.")
-	parser.add_argument('-H', '--half-table', action="store_true", help="use a half-width (8, not 16) bit table. Faster and smaller, but requires page alignment")
-	parser.add_argument('-M', '--self-modifying', action="store_true", help="use self modifying code. Faster and smaller, but won't run from ROM")
-	parser.add_argument('-D', '--denominator-from', default="memory", help="take the denominator from this reg ('x', 'y' or 'a'), or 'memory' (the 'denominator' location).")
+	# Environment
+	env_group = parser.add_argument_group("Environment", "Parameters controlling the calling convention.")
+	env_group.add_argument('-n', '--numerator', default="muldiv_temp_t", help="label of the zero page location containing the numerator")
+	env_group.add_argument('-d', '--denominator', default="muldiv_temp_u", help="label of the zero page location containing the denominator")
+	env_group.add_argument('-D', '--denominator-from', default="x", help="take the denominator from this reg ('x', 'y' or 'a'), or 'memory' (the 'denominator' location).")
+	env_group.add_argument('-N', '--numerator-from', default="memory", help="take the numerator from this reg ('x', 'y' or 'a'), or 'memory' (the 'denominator' location).")
+	env_group.add_argument('-W', '--result-to', default="a", help="return the result in this reg ('x', 'y' or 'a'), or 'denominator' or 'numerator' to put it in memory.")
+	env_group.add_argument('-0', '--divide-by-zero', help="set the external divide by zero handler.")
+	env_group.add_argument('-9', '--error-vector', action='store_true', help="if set, the division by zero handler is a vector (pointer to call indirectly), not a target to call directly.")
 
-	# Test modes
-	parser.add_argument('-t', '--test', action="store_true", help="produce all possibilities, save stats and a TOML description")
-	parser.add_argument('-s', '--stats', action="store_true", help="generate statistics (this makes the test much slower)")
-	parser.add_argument('-a', '--assemble', action="store_true", help="when testing, run ACME assembler to test correctness of each output")
-	parser.add_argument('-q', '--quick', action="store_true", help="when testing, run a smaller set of cases")
-	parser.add_argument('-Q', '--quickest', action="store_true", help="when testing, run a much smaller set of cases")
-	parser.add_argument('-v', '--verbose', action="store_true", help="when testing,include all (not just failing) cases in asmout.txt")
-	parser.add_argument('-E', '--emulate', action="store_true", help="when testing, run emulator to check correctness and time taken")
-	parser.add_argument('-r', '--random', type=int, default=1000, help="when testing, run this many randomly generated test cases")
-	parser.add_argument('-R', '--random-seed', type=int, help="when testing with --random, use a repeatable set of cases generated from this number")
-	parser.add_argument('-1', '--one-error', action="store_true", help="when testing, exit at the first error")
+	# Parameters for producing a single instance
+	single_group = parser.add_argument_group("Parameters", "Parameters defining a single divider routine, or the subset of routines which a test will consider.")
+	single_group.add_argument('-c', '--max-custom', type=int, default=18, help="maximum denominator to use a custom routine (higher is faster but larger)")
+	single_group.add_argument('-f', '--max-full', type=int, default=18, help="maximum denominator to use a custom routine that is not just a prefix to another")
+	single_group.add_argument('-I', '--inlining', action='store_true', help="use inlining (less space, but slower)")
+	single_group.add_argument('-~I','--no-inlining', action='store_true')
+	single_group.add_argument('-F', '--factoring', action='store_true', help="use factoring (faster for a few cases, but bigger)")
+	single_group.add_argument('-~F','--no-factoring', action='store_true')
+	single_group.add_argument('-T', '--choice-tree', action='store_true', help="use a choice tree if possible (faster and usually smaller, for low --max-custom)")
+	single_group.add_argument('-~T','--no-choice-tree', action='store_true')
+	single_group.add_argument('-S', '--max-shifting', type=int, default=0, help="maximum denominator to use the shifting divider as a fallback when over max-custom. 0 = never use it, 256=always.")
+	single_group.add_argument('-H', '--half-table', action="store_true", help="use a half-width (8, not 16 bit) table. Faster and smaller, but is sensitive to alignment")
+	single_group.add_argument('-~H','--no-half-table', action='store_true')
+	single_group.add_argument('-M', '--self-modifying', action="store_true", help="use self modifying code. Faster and smaller, but won't run from ROM")
+	single_group.add_argument('-~M','--no-self-modifying', action='store_true')
+	single_group.add_argument('-u', '--unroll', action='store_true', help="unroll the subtraction loop (bigger, faster)")
+	single_group.add_argument('-~u','--no-unroll', action='store_true')
+	single_group.add_argument('-B',	'--high-bit', action='store_true', help="test the high bit of the denominator: over 128 the result is either 0 or 1, which is fast to test.")
+	single_group.add_argument('-~B','--no-high-bit', action='store_true')
+	single_group.add_argument('-V',	'--early-high-bit', action='store_true', help="do that test before checking whether it's in the table - faster if high bit set values are common.")
+	single_group.add_argument('-~V','--no-early-high-bit', action='store_true')
+	single_group.add_argument('-k',	'--known-denominator', type=int, help="produce code to divide by a known constant denominator")
+
+	# Test / Stats (multiple run) modes
+	test_group = parser.add_argument_group("Test modes", "Test modes: run multiple cases to check correctness and obtain comparative stats.")
+	test_group.add_argument('-t', '--test', action="store_true", help="produce all possibilities, save stats and a TOML description")
+	test_group.add_argument('-s', '--stats', action="store_true", help="generate statistics (this makes the test slower)")
+	test_group.add_argument('-X', '--fast-stats', action="store_true", help="generate estimated or emulated statistics from a limited set of numerator/denominators (faster, less accurate)")
+	test_group.add_argument('-Y', '--random-stats', type=int, default=0, help="generate estimated or emulated statistics from randomized numerator/denominators (faster, less accurate)")
+	test_group.add_argument('-a', '--assemble', action="store_true", help="when testing, run the ACME assembler to test correctness of each output")
+	test_group.add_argument('-q', '--quick', action="store_true", help="when testing, run a smaller set of cases")
+	test_group.add_argument('-Q', '--quickest', action="store_true", help="when testing, run a much smaller set of cases")
+	test_group.add_argument('-v', '--verbose', action="store_true", help="when testing, include all (not just failing) cases in the report")
+	test_group.add_argument('-E', '--emulate', action="store_true", help="when testing, run a 6502 emulator to check correctness and time taken (this makes the test much slower)")
+	test_group.add_argument('-r', '--random', type=int, help="when testing, run this many randomly generated test cases")
+	test_group.add_argument('-R', '--random-seed', type=int, help="when testing with --random, use a repeatable set of cases generated from this number")
+	test_group.add_argument('-1', '--one-error', action="store_true", help="when testing, exit at the first error")
+	test_group.add_argument('-A', '--report', help="generate a report of errors to this file")
 
 	args = parser.parse_args()
+
+	if args.early_high_bit is True:
+		args.high_bit = True
 
 	if args.quickest is True:
 		args.quick = True
@@ -1537,38 +2043,19 @@ def main():
 	else:
 		single(args)
 
-# For testing kb
-import tty
-import termios
-import fcntl
+# True if the given parameters match command line limits on test modes
+def args_are_ok(args, factoring, inlining, choice_tree, half_table, self_modifying, unroll, high_bit, early_high_bit): 
+	if (early_high_bit is False and args.early_high_bit is True) or (early_high_bit is True and args.no_early_high_bit is True) or \
+		(high_bit is False and args.high_bit is True) or (high_bit is True and args.no_high_bit is True) or \
+		(unroll is False and args.unroll is True) or (unroll is True and args.no_unroll is True) or \
+		(self_modifying is False and args.self_modifying is True) or (self_modifying is True and args.no_self_modifying is True) or \
+		(half_table is False and args.half_table is True) or (half_table is True and args.no_half_table is True) or \
+		(choice_tree is False and args.choice_tree is True) or (choice_tree is True and args.no_choice_tree is True) or \
+		(inlining is False and args.inlining is True) or (inlining is True and args.no_inlining is True) or \
+		(factoring is False and args.factoring is True) or (factoring is True and args.no_factoring is True):
+		return False
 
-class raw(object):
-    def __init__(self, stream):
-        self.stream = stream
-        self.fd = self.stream.fileno()
-    def __enter__(self):
-        self.original_stty = termios.tcgetattr(self.stream)
-        tty.setcbreak(self.stream)
-    def __exit__(self, type, value, traceback):
-        termios.tcsetattr(self.stream, termios.TCSANOW, self.original_stty)
-
-class nonblocking(object):
-    def __init__(self, stream):
-        self.stream = stream
-        self.fd = self.stream.fileno()
-    def __enter__(self):
-        self.orig_fl = fcntl.fcntl(self.fd, fcntl.F_GETFL)
-        fcntl.fcntl(self.fd, fcntl.F_SETFL, self.orig_fl | os.O_NONBLOCK)
-    def __exit__(self, *args):
-        fcntl.fcntl(self.fd, fcntl.F_SETFL, self.orig_fl)
-
-def test_leaving():
-	with raw(sys.stdin):
-		with nonblocking(sys.stdin):
-			c = sys.stdin.read(1)
-			if c == 'q' or c== 'Q':
-				return True
-	return False
+	return True
 
 def test_random_futures(args, executor):
 	futures = []
@@ -1589,11 +2076,11 @@ def test_random_futures(args, executor):
 	unrolled_max = 2
 	high_bit_max = 2
 	early_high_bit_max = 2
-	
+
 	shift_cases_max = 66
 	sample_max = i_max * j_max * factoring_max * inlining_max * choice_tree_max * use_smc_max * half_table_max * shift_cases_max * high_bit_max * early_high_bit_max
 	print(f"Taking {args.random} samples randomly from {sample_max} possibilities", file=sys.stderr)
-	
+
 	poss = int(args.random * 1.2)
 	rnl = random.sample(range(sample_max), poss)
 	pargsl = []
@@ -1630,9 +2117,15 @@ def test_random_futures(args, executor):
 			sample //= high_bit_max
 			early_high_bit = (sample % early_high_bit_max) == 0
 			#sample //= early_high_bit_max
-			pargs = (i, j, "", factoring, inlining, "", choice_tree, max_shifting_divider, half_table, use_smc, args.stats, args.assemble, unrolled, high_bit, early_high_bit, False, args.emulate, "memory")
-			if try_make_divide(pargs) is True:
-				pargsl.append(pargs)
+			if args_are_ok(args, factoring, inlining, choice_tree, half_table, use_smc, unrolled, high_bit, early_high_bit): 
+				divi = Divider(max_custom=i, max_full=j, prefix="", use_factoring=factoring, inlining=inlining, style="", \
+										use_choice_tree=choice_tree, max_shifting_divider=max_shifting_divider, half_table=half_table, \
+										use_smc=use_smc, with_stats=args.stats, assemble=args.assemble, fallback_unrolled_subtraction=unrolled, \
+										high_bit_check=high_bit, early_high_bit=early_high_bit, first=False, emulate=args.emulate, \
+										denominator_from=args.denominator_from, numerator_from=args.numerator_from, result_to=args.result_to, fast_stats=args.fast_stats, \
+										random_stats = args.random_stats, divide_by_0=args.divide_by_zero, error_vector=args.error_vector)
+				if divi.try_make_divide() is True:
+					pargsl.append(divi)
 		if len(pargsl) < args.random:
 			if len(pargsl) <= 100:
 				poss *= 10
@@ -1642,14 +2135,13 @@ def test_random_futures(args, executor):
 			poss = int(poss)
 	print(f"Found {len(pargsl)} possibilities...", file=sys.stderr)
 	for pargs in pargsl:
-		futures.append(executor.submit(do_make_divide, pargs))
-		
+		futures.append(executor.submit(pargs.do_make_divide))
+
 	return (len(pargsl), futures)
 
 def test_futures(args, executor):
 	if args.random is not None:
 		return test_random_futures(args, executor)
-
 	futures = []
 
 	max_cases = list(CUSTOMS)
@@ -1657,7 +2149,7 @@ def test_futures(args, executor):
 	hs_table = ( (False, True), (False, False), (True, False), (True, True) )
 	if args.quick is True:
 		max_cases = (
-			1, 2, 4,
+			0, 1, 2, 3, 4,
 			6, 8, 10, 12,
 			15, 18, 23, 28,
 			34, 40, 52, 64
@@ -1667,7 +2159,7 @@ def test_futures(args, executor):
 		if args.quickest is True:
 			shift_cases = (0, 12, 256)
 			max_cases = (
-				2, 4,
+				0, 1, 2, 3, 4,
 				6, 8, 10, 12,
 				15, 18, 23, 64
 				)
@@ -1686,69 +2178,62 @@ def test_futures(args, executor):
 
 	cases=0
 	for i in max_cases:
-		if i >= 2:
-			offset_cases = []
-			for m in shift_cases:
-				if m != 0 and m != 256:
-					offset_cases.append(m + i)
-				else:
-					offset_cases.append(m)
-			fic_table = fic_table_over_15
-			if i <= 15:
-				fic_table = fic_table_7_15
-				if i < 7:
-					fic_table = fic_table_5_7
-					if i <= 5:
-						fic_table = fic_table_under_5
-			for j in full_cases:
-				if j <= i:
-					#ij_style = f"{i}_{j}"
-					for factoring, inlining, choice_tree in fic_table:
-						if (j != i) and ((args.quickest is True) or (choice_tree is True)):
-							continue
-						for half_table, use_smc in hs_table:
-							for max_shifting_divider in offset_cases:
-								first = True
-								for high_bit, early_high_bit, unrolled, tag in tags:
-									pargs = (i, j, "", factoring, inlining, "", choice_tree, max_shifting_divider, half_table, use_smc, args.stats, args.assemble, unrolled, high_bit, early_high_bit, first, args.emulate, "memory")
-									if try_make_divide(pargs) is True:
-										#style = f"{ij_style}{tag}"
-										#prefix = f"djbt_{style}"
-										futures.append(executor.submit(do_make_divide, pargs))
+		offset_cases = []
+		for m in shift_cases:
+			if m != 0 and m != 256:
+				offset_cases.append(m + i)
+			else:
+				offset_cases.append(m)
+		fic_table = fic_table_over_15
+		if i <= 15:
+			fic_table = fic_table_7_15
+			if i < 7:
+				fic_table = fic_table_5_7
+				if i <= 5:
+					fic_table = fic_table_under_5
+		for j in full_cases:
+			if j <= i:
+				for factoring, inlining, choice_tree in fic_table:
+					if (j != i) and ((args.quickest is True) or (choice_tree is True)):
+						continue
+					for half_table, use_smc in hs_table:
+						for max_shifting_divider in offset_cases:
+							first = True
+							for high_bit, early_high_bit, unrolled, tag in tags:
+								if args_are_ok(args, factoring, inlining, choice_tree, half_table, use_smc, unrolled, high_bit, early_high_bit):
+									divi = Divider(max_custom=i, max_full=j, prefix="", use_factoring=factoring, inlining=inlining, style="", \
+										use_choice_tree=choice_tree, max_shifting_divider=max_shifting_divider, half_table=half_table, \
+										use_smc=use_smc, with_stats=args.stats, assemble=args.assemble, fallback_unrolled_subtraction=unrolled, \
+										high_bit_check=high_bit, early_high_bit=early_high_bit, first=first, emulate=args.emulate, \
+										denominator_from=args.denominator_from, numerator_from=args.numerator_from, fast_stats=args.fast_stats, \
+										random_stats = args.random_stats, divide_by_0=args.divide_by_zero, error_vector=args.error_vector)
+									if divi.try_make_divide() is True:
+										futures.append(executor.submit(divi.do_make_divide))
 										cases += 1
 										first = False
-							# Test kb
-							if test_leaving() is True:
-								print(f"Leaving setup with {cases} cases", file=sys.stderr)
-								return (cases, futures)
-				else:
-					break
+			else:
+				break
 
 	return (cases, futures)
 
-
 def do_test(args, cases, futures, executor):
+	sbar = "+------" * 11
 	if args.stats:
-		bar = "+------+------+------+------+------+------+------+------+------+-------+-------+-------+------+-------+"
-	else:
-		bar = "+------+------+------+------+------+------+------+------+------+"
+		sbar = f"{sbar}+-------+-------+-------+------+-------"
 	if args.emulate:
-		bar = bar + "-------+"
-	mean_list = []
-	mean_64_list = []
-	mean_16_list = []
-	median_list = []
-	worst_list = []
-	emean_list = []
-	emean_64_list = []
-	emean_16_list = []
-	emedian_list = []
-	eworst_list = []
-	full_list = []
+		sbar = f"{sbar}+-------+-------+-------+------+-------"
+	sbar = f"{sbar}+{'-' * MAX_COMMAND}"
+	asmoutname = args.report
+	sbar = sbar + "+"
+	stat_lists = {}
+	for name in ( "full", "mean", "mean64", "mean16", "median", "worst", "mix", "emean", "emean64", "emean16", "emedian", "eworst", "emix"):
+		stat_lists[name] = []
 
 	print(f"Running {cases} test cases...", file=sys.stderr)
 
+
 	# Run them all
+	emulation_results = {}
 	asmout = []
 	errors = 0
 	badparams = 0
@@ -1757,47 +2242,28 @@ def do_test(args, cases, futures, executor):
 	success = 0
 
 	for future in futures:
-		if test_leaving() is True:
-			print(f"Completing...")
-			break
-
 		returned = future.result()
-		i, j, prefix, factoring, inlining, style, choice_tree, max_shifting_divider, unrolled, high_bit, early_high_bit, half_table, use_smc, result, binary, avail, string, cycles, m64, m16, median, worst, ecycles, em64, em16, emedian, eworst, size, first, emulation_result = returned
-		cwith = "No"
-		if choice_tree is True:
-			cwith = "Yes" 
-			style = style + "_c"
-		fwith = "No"
-		if factoring is True:
-			fwith = "Yes" 
-			style = style + "_f"
-		iwith = "No"
-		if inlining is True:
-			iwith = "Yes" 
-			style = style + "_i"
-		style = style + f"_s{max_shifting_divider}"
-		uwith = "No"
-		if unrolled is True:
-			uwith = "Yes"
-			style = style + "_u"
-		hwith = "No"
-		if high_bit is True:
-			hwith = "Late"
-			if early_high_bit is True:
-				hwith = "Early"
-				style = style + "_e"
-			else:
-				style = style + "_l"
+		result, binary, avail, string, cycles, m64, m16, median, worst, ecycles, em64, em16, emedian, eworst, size, emulation_result = returned.result
+
+		prefix = returned.prefix
+		factoring = returned.use_factoring
+		inlining = returned.inlining
+		style = returned.style
+		choice_tree = returned.use_choice_tree
+		max_shifting_divider = returned.max_shifting_divider
+		unrolled = returned.fallback_unrolled_subtraction
+		high_bit = returned.high_bit_check
+		early_high_bit = returned.early_high_bit
 
 		if avail:
-			if first:
-				full_list.append(bar)
-			emu_result = add_line(i, j, fwith, iwith, cwith, max_shifting_divider, half_table, use_smc, uwith, hwith, size, cycles, m64, m16, median, worst, ecycles, em64, em16, emedian, eworst, mean_list, mean_64_list, mean_16_list, median_list, worst_list, emean_list, emean_64_list, emean_16_list, emedian_list, eworst_list, full_list, args.stats, string, style, args.numerator, args.denominator, emulation_result, args.emulate)
+			if returned.first:
+				stat_lists["full"].append(sbar)
+			emu_result = returned.add_line(stat_lists)
 
 		error = (binary is None or result is None or "Error" in result)
 		if error is True:
 			errors += 1
-		badparam = NOT_POSS in result
+		badparam = result and NOT_POSS in result
 		if badparam is True:
 			badparams += 1
 		if error is False and badparam is False:
@@ -1812,13 +2278,20 @@ def do_test(args, cases, futures, executor):
 					emu_errors += 1
 					if trace is not None:
 						emu_traces += 1
-						emu_trace = str(trace) 
-		if args.verbose or error is True or emu_trace is not None:
-			asmout.append(f"Results for max_custom {i}, max_full {j}, inlining {iwith}, factoring {factoring}, choice {cwith}, max_shifting {max_shifting_divider}:")
+						emu_trace = str(trace)
+		eib = (emulation_result is not None and isinstance(emulation_result, str) and badparam is not True)
+		if args.verbose or error is True or emu_trace is not None or eib:
+			asmout.append(f"Results for max_custom {returned.max_custom}, max_full {returned.max_full}, factoring {factoring}, inlining {inlining}, unrolled {unrolled}, choice {choice_tree}, max_shifting {max_shifting_divider}:")
 			if result is None:
 				asmout.append("(no result)")
 			else:
 				asmout.append(str(result))
+			if isinstance(emulation_result, str):
+				if emulation_result not in emulation_results:
+					emulation_results[emulation_result] = 0
+				emulation_results[emulation_result] += 1
+			if (emulation_result is not None and isinstance(emulation_result, str) and badparam is not True):
+				asmout.append(f"Emulation error: {emulation_result}")
 			if emu_trace is not None:
 				asmout.append("Trace follows:")
 				asmout.append(")\n".join(emu_trace.split("),")))
@@ -1828,65 +2301,76 @@ def do_test(args, cases, futures, executor):
 			else:
 				asmout.append(str(binary))
 			asmout.append("")
-		if args.one_error and error is True or emu_trace is not None:
+		if args.one_error and (error is True or emu_trace is not None or eib):
 			print(f"Error, exiting after {success} successful cases...", file=sys.stderr)
 			executor.shutdown(cancel_futures=True, wait=True)
 			break
-	full_list.append(bar)
+	stat_lists["full"].append(sbar)
 
-	with open("asmout.txt", "w") as file:
-		header = f"Ran {errors+success} test cases, {errors} errors, {success} successfully assembled.\n"
-		if args.emulate:
-			header = header[:-2] + f", {emu_errors - badparams} emulation errors, {badparams} bad parameters, {emu_traces} with trace.\n"
-		file.write(header)
-		for entry in asmout:
+	if asmoutname is not None:
+		with open(asmoutname, "w") as file:
+			header = f"Ran {errors+success} test cases, {errors} errors, {success} successfully assembled.\n"
+			if args.emulate:
+				header = header[:-2] + f", {emu_errors - badparams} emulation errors, {badparams} bad parameters, {emu_traces} with trace.\n"
+				if len(emulation_results) > 0:
+					header = f"{header}Emulation errors reported: {emulation_results}"
+			file.write(header)
+			for entry in asmout:
+				file.write("\n")
+				file.write(entry)
 			file.write("\n")
-			file.write(entry)
-		file.write("\n")
 
 	# Add stats
 	out = []
-	if args.stats is True:
-		best_worst  	= best_time(worst_list)
-		best_median 	= best_time(median_list)
-		best_mean   	= best_time(mean_list)
-		best_mean_64   	= best_time(mean_64_list)
-		best_mean_16   	= best_time(mean_16_list)
-		best_blended   	= blended_best_time([mean_16_list, mean_64_list, mean_list, median_list, worst_list])
-		add_title("Best by a mixed score (mean <256,64,16 + median + worst), smallest to fastest", out, args)
+	est=""
+	if args.emulate is True:
+		best_worst  	= best_time(stat_lists["eworst"])
+		best_median 	= best_time(stat_lists["emedian"])
+		best_mean   	= best_time(stat_lists["emean"])
+		best_mean_64   	= best_time(stat_lists["emean64"])
+		best_mean_16   	= best_time(stat_lists["emean16"])
+		best_blended   	= blended_best_time([stat_lists["emean16"], stat_lists["emean64"], stat_lists["emean"], stat_lists["emedian"], stat_lists["eworst"]])
+		add_title("Emulated: Best by a mixed score, smallest to fastest", out, args)
 		out.extend(best_blended)
-		add_title("Best by mean cycles, from smallest to fastest", out, args)
+		add_title("Emulated: Best by mean cycles, from smallest to fastest", out, args)
 		out.extend(best_mean)
-		add_title("Best by mean cycles for denominators <= 64, from smallest to fastest", out, args)
+		add_title("Emulated: Best by mean cycles for denominators <= 64, from smallest to fastest", out, args)
 		out.extend(best_mean_64)
-		add_title("Best by mean cycles for denominators <= 16, from smallest to fastest", out, args)
+		add_title("Emulated: Best by mean cycles for denominators <= 16, from smallest to fastest", out, args)
 		out.extend(best_mean_16)
-		add_title("Best by median cycles, from smallest to fastest", out, args)
+		add_title("Emulated: Best by median cycles, from smallest to fastest", out, args)
 		out.extend(best_median)
-		add_title("Best by worst case cycles, from smallest to fastest", out, args)
+		add_title("Emulated: Best by worst case cycles, from smallest to fastest", out, args)
 		out.extend(best_worst)
-		if args.emulate is True:
-			best_worst  	= best_time(eworst_list)
-			best_median 	= best_time(emedian_list)
-			best_mean   	= best_time(emean_list)
-			best_mean_64   	= best_time(emean_64_list)
-			best_mean_16   	= best_time(emean_16_list)
-			best_blended   	= blended_best_time([emean_16_list, emean_64_list, emean_list, emedian_list, eworst_list])
-			add_title("Emulated: Best by a mixed score, smallest to fastest", out, args)
-			out.extend(best_blended)
-			add_title("Emulated: Best by mean cycles, from smallest to fastest", out, args)
-			out.extend(best_mean)
-			add_title("Emulated: Best by mean cycles for denominators <= 64, from smallest to fastest", out, args)
-			out.extend(best_mean_64)
-			add_title("Emulated: Best by mean cycles for denominators <= 16, from smallest to fastest", out, args)
-			out.extend(best_mean_16)
-			add_title("Emulated: Best by median cycles, from smallest to fastest", out, args)
-			out.extend(best_median)
-			add_title("Emulated: Best by worst case cycles, from smallest to fastest", out, args)
-			out.extend(best_worst)
+		est = "Estimated: "
+	if args.stats is True:
+		best_worst  	= best_time(stat_lists["worst"])
+		best_median 	= best_time(stat_lists["median"])
+		best_mean   	= best_time(stat_lists["mean"])
+		best_mean_64   	= best_time(stat_lists["mean64"])
+		best_mean_16   	= best_time(stat_lists["mean16"])
+		best_blended   	= blended_best_time([stat_lists["mean16"], stat_lists["mean64"], stat_lists["mean"], stat_lists["median"], stat_lists["worst"]])
+		add_title(f"{est}Best by a mixed score (mean <256,64,16 + median + worst), smallest to fastest", out, args)
+		out.extend(best_blended)
+		add_title(f"{est}Best by mean cycles, from smallest to fastest", out, args)
+		out.extend(best_mean)
+		add_title(f"{est}Best by mean cycles for denominators <= 64, from smallest to fastest", out, args)
+		out.extend(best_mean_64)
+		add_title(f"{est}Best by mean cycles for denominators <= 16, from smallest to fastest", out, args)
+		out.extend(best_mean_16)
+		add_title(f"{est}Best by median cycles, from smallest to fastest", out, args)
+		out.extend(best_median)
+		add_title(f"{est}Best by worst case cycles, from smallest to fastest", out, args)
+		out.extend(best_worst)
 	add_title("All cases, sorted by table length", out, args)
-	out.extend(full_list)
-	print("\n".join(out))
+	if args.random is not None:
+		stat_lists["full"].sort()
+	out.extend(stat_lists["full"])
+	if isinstance(args.output, str):
+		with open(args.output, "w") as file:
+			print("\n".join(out), file=file)
+	else:
+		print("\n".join(out), file=args.output)
 
 def test(args):
 	# Set up futures for all possibilities
