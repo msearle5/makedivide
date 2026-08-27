@@ -319,20 +319,26 @@ def stats_cycles(max_custom, max_full, unrolled, high_bit, early_high_bit, inlin
 	return cycles, cycles64, cycles16, median, worst
 
 # The main entry point: see top of file for documentation
-def make_divide(max_custom, max_full, numerator, denominator, prefix, insn, label, equb, comment, *, fallback_unrolled_subtraction = True, high_bit_check = False, early_high_bit = False, divide_by_0=None, use_factoring=False, inlining=False, use_choice_tree=False, max_shifting_divider=0, with_stats=False):
-	assert (max_full <= max_custom)
-	assert (high_bit_check or not early_high_bit)
-	assert (max_full >= 2)
+def make_divide(max_custom, max_full, numerator, denominator, prefix, insn, label, equb, comment, *, fallback_unrolled_subtraction = True, high_bit_check = False, early_high_bit = False, divide_by_0=None, use_factoring=False, inlining=False, use_choice_tree=False, max_shifting_divider=0, with_stats=False, dry_run=False):
+	if dry_run:
+		if (max_full > max_custom) or (early_high_bit and not high_bit_check) or (max_full < 2):
+			return False
+	else:
+		assert (max_full <= max_custom)
+		assert (high_bit_check or not early_high_bit)
+		assert (max_full >= 2)
 
-	available=True
+	if max_custom >= 5 and use_choice_tree is True:
+		if dry_run is True:
+			return False
+		use_choice_tree = False
+		avail = False
+		print("WARNING: choice_tree not available for max_custom >= 5")
 
-	internal_div_by_0 = False
-	if divide_by_0 is None:
-		internal_div_by_0 = True
-		divide_by_0 = f"{prefix}divide_by_0"
-	text = []
+	#if max_custom >= 7 and use_choice_tree is True:
+		#max_custom = 5
+	#	use_choice_tree = False
 
-	generic_limit = 255
 	low_iters_max = 0
 	if high_bit_check is True and fallback_unrolled_subtraction is True:
 		low_iters_max = 2
@@ -348,23 +354,231 @@ def make_divide(max_custom, max_full, numerator, denominator, prefix, insn, labe
 			max_custom_avail = i-1
 			break
 
-	max_iters = generic_limit // max_custom_avail
+	max_iters = 255 // max_custom_avail
 	max_iters = max(low_iters_max, max_iters)
+
+	available=True
+	# Limited by branch range to ~60 (FIXME not tested)
+	if fallback_unrolled_subtraction is True and max_iters > 60:
+		if dry_run is True:
+			return False
+		print("WARNING: unrolled subtraction not available - branch range limited", file=sys.stderr)
+		fallback_unrolled_subtraction = False
+		available=False
+
+	if dry_run is True:
+		return True
+
+	jumps = set()
+	for i in range(0, max(3, max_custom+1)):
+		jumps.add(i)
+		for j in range(1, 7):
+			if (i*(1<<j)) <= max_full:
+				jumps.add(j)
+
+	internal_div_by_0 = False
+	if divide_by_0 is None:
+		internal_div_by_0 = True
+		divide_by_0 = f"{prefix}divide_by_0"
+
+	text = []
 	text.append(f"{comment}Division, 8 / 8 bits.")
+	if not use_choice_tree:
+		text.append(f"{label}{prefix}entry")
+		text.append(f"{insn}ldx {denominator}")
+		# Early high jump
+		if early_high_bit is True:
+			text.append(f"{insn}bmi {prefix}high_bit_denom")
 
-	text.append(f"{insn}ldx {denominator}")
+		# Check jump vs. subtract
+		text.append(f"{insn}cpx #{max_custom+1}")
+		text.append(f"{insn}bcs {prefix}use_sub")
 
-	# Early high jump
-	if early_high_bit is True:
-		text.append(f"{insn}bmi {prefix}high_bit_denom")
+		text.append(f"{comment}RTS-trick jump table")
+		text.append(f"{insn}lda {prefix}hightable, x")
+		text.append(f"{insn}pha")
+		text.append(f"{insn}lda {prefix}lowtable, x")
+		text.append(f"{insn}pha")
+		text.append(f"{insn}lda {numerator}")
+		text.append(f"{insn}rts")
 
-	# Check jump vs. subtract
-	text.append(f"{insn}cpx #{max_custom+1}")
-	text.append(f"{insn}bcs {prefix}use_sub")
+	with_shifting = False
+	with_subtraction = False
+	# Repeated subtraction, unrolled
+	if max_shifting_divider > 0:
+		with_shifting = True
+	if max_shifting_divider < 256:
+		with_subtraction = True
 
-	# Jump table (or choice tree) dispatch
-	# Jumps to use_sub will always bypass high bit check
-	if use_choice_tree:
+	if with_shifting and with_subtraction:
+		text.append(f"{label}{prefix}use_sub")
+		text.append(f"{insn}cpx #{max_shifting_divider}+1")
+		# Branch to subtraction...
+		text.append(f"{insn}bcs {prefix}use_sub_unchecked")
+		# or fall through to shifting
+
+	if with_shifting:
+		if not with_subtraction:
+			text.append(f"{label}{prefix}use_sub")
+			if high_bit_check is True: # TODO are these & the only below ever doubled early?
+				text.append(f"{insn}bmi {prefix}high_bit_denom")
+			text.append(f"{label}{prefix}use_sub_unchecked")
+		text.append(f"{label}{prefix}use_shift")
+		text.append(f"{insn}lda #0")
+		text.append(f"{insn}ldx #8")
+		text.append(f"{insn}asl {numerator}")
+		text.append(f"{label}{prefix}divide_l1") 
+		text.append(f"{insn}rol")
+		text.append(f"{insn}cmp {denominator}")
+		text.append(f"{insn}bcc {prefix}divide_l2")
+		text.append(f"{insn}sbc {denominator}")
+		text.append(f"{label}{prefix}divide_l2")
+		text.append(f"{insn}rol {numerator}")
+		text.append(f"{insn}dex")
+		text.append(f"{insn}bne {prefix}divide_l1")
+		text.append(f"{insn}rts")
+
+	# Check high bit
+	if high_bit_check is True and use_choice_tree is False:
+		text.append(f"{label}{prefix}high_bit_denom")
+		text.append(f"{insn}cpx {numerator}")
+		text.append(f"{insn}bcc {prefix}return_1")
+		text.append(f"{insn}beq {prefix}return_1")
+		# Fall thru to return 0 if unrolled
+		if fallback_unrolled_subtraction is False or with_subtraction is False:
+			text.append(f"{insn}lda #0")
+			text.append(f"{insn}rts")
+			text.append(f"{label}{prefix}return_1")
+			text.append(f"{insn}lda #1")
+			text.append(f"{insn}rts")
+
+	if with_subtraction:
+		if fallback_unrolled_subtraction is True:
+			midpoint = max(low_iters_max, (max_iters - 4) // 2) # offset because for very large tables the limit is the bcs use_sub
+			if use_choice_tree:
+				midpoint = min(max_iters, 30)
+			for i in range(0, midpoint):
+				text.append(f"{label}{prefix}return_{i}")
+				text.append(f"{insn}lda #{i}")
+				text.append(f"{insn}rts")
+			if not with_shifting:
+				text.append(f"{label}{prefix}use_sub")
+				#FIXME cause OOR
+				if high_bit_check is True and early_high_bit is False:
+					text.append(f"{insn}bmi {prefix}high_bit_denom")
+			text.append(f"{label}{prefix}use_sub_unchecked")
+			text.append(f"{insn}lda {numerator}")
+			text.append(f"{insn}sec")
+			for i in range(0, max_iters):
+				text.append(f"{insn}sbc {denominator}")
+				text.append(f"{insn}bcc {prefix}return_{i}")
+			text.append(f"{insn}lda #{max_iters}")
+			text.append(f"{insn}rts")
+			#if use_choice_tree is True:
+			#	text.append(f"{label}{prefix}use_sub_boing")
+			#	text.append(f"{insn}bcs {prefix}use_sub")
+			for i in range(midpoint, max_iters):
+				text.append(f"{label}{prefix}return_{i}")
+				text.append(f"{insn}lda #{i}")
+				text.append(f"{insn}rts")
+			#if use_choice_tree is True:
+			#	text.append(f"{label}{prefix}use_sub_boing")
+			#	text.append(f"{insn}bcs {prefix}use_sub")
+		else:
+			# Repeated subtraction, rolled
+			if not with_shifting:
+				text.append(f"{label}{prefix}use_sub")
+			if high_bit_check is True and early_high_bit is False:
+				text.append(f"{insn}bmi {prefix}high_bit_denom")
+			text.append(f"{label}{prefix}use_sub_unchecked")
+			text.append(f"{insn}lda {numerator}")
+			text.append(f"{insn}ldx #255")
+			text.append(f"{insn}sec")
+			text.append(f"{label}{prefix}use_sub_loop")
+			text.append(f"{insn}sbc {denominator}")
+			text.append(f"{insn}inx")
+			text.append(f"{insn}bcs {prefix}use_sub_loop")
+			text.append(f"{insn}txa")
+			text.append(f"{insn}rts")
+
+	# Jump table - make entries
+	factors = set()
+	jumpentries = []
+	jumpentries.append(divide_by_0)
+	for i in range(1, max_custom+1):
+		if i in CUSTOMS and (i in PRIMES or i <= max_full):
+			jumpentries.append(f"{prefix}divide_by_{i}")
+		else:
+			if use_factoring is True:
+				is_good, factor1, factor2 = factoring_is_good(max_full, i, fallback_unrolled_subtraction, high_bit_check, inlining)
+			else:
+				is_good = False
+			if is_good is True:
+				assert(i == 9) or (i == 15)
+				factors.add(i)
+				jumps.add(i)
+				jumps.add(i*2)
+				jumps.add(i*4)
+				jumps.add(i*8)
+				jumpentries.append(f"{prefix}divide_by_{i}")
+			else:
+				jumpentries.append(f"{prefix}use_sub_unchecked")
+
+	# Custom dividers
+	if 64 in jumps:
+		text.append(f"{label}{prefix}divide_by_64")
+		text.append(f"{insn}lsr")
+	if 32 in jumps:
+		text.append(f"{label}{prefix}divide_by_32")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}bpl {prefix}divide_by_16")
+
+	if 34 in jumps:
+		text.append(f"{label}{prefix}divide_by_34")
+		text.append(f"{insn}lsr")
+	if 17 in jumps:
+		text.append(f"{label}{prefix}divide_by_17")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}adc #0")
+
+	if 16 in jumps:
+		text.append(f"{label}{prefix}divide_by_16")
+		text.append(f"{insn}lsr")
+	if 8 in jumps:
+		text.append(f"{label}{prefix}divide_by_8")
+		text.append(f"{insn}lsr")
+	if 4 in jumps:
+		text.append(f"{label}{prefix}divide_by_4")
+		text.append(f"{insn}lsr")
+	if 2 in jumps:
+		text.append(f"{label}{prefix}divide_by_2")
+		text.append(f"{insn}lsr")
+	text.append(f"{label}{prefix}divide_by_1")
+	if internal_div_by_0 is True:
+		text.append(f"{label}{prefix}divide_by_0")
+	text.append(f"{insn}rts")
+
+	if use_choice_tree is True:
+		text.append(f"{label}{prefix}entry")
+		
+		text.append(f"{insn}ldx {denominator}")
+		# Early high jump
+		if early_high_bit is True:
+			text.append(f"{insn}bmi {prefix}high_bit_denom")
+
+		# Check jump vs. subtract
+		text.append(f"{insn}cpx #{max_custom+1}")
+		text.append(f"{insn}bcs {prefix}use_sub")
+
+		#pass
+		# Jump table (or choice tree) dispatch
+		# Jumps to use_sub will always bypass high bit check
 		if max_custom == 2:
 			text.append(f"{insn}cpx #1")
 			text.append(f"{insn}beq {prefix}divide_by_1")
@@ -433,132 +647,18 @@ def make_divide(max_custom, max_full, numerator, denominator, prefix, insn, labe
 			print("WARNING: choice tree not available with this size table", file=sys.stderr)
 			use_choice_tree = False
 			available=False
-	if not use_choice_tree:
-		text.append(f"{comment}RTS-trick jump table")
-		text.append(f"{insn}lda {prefix}hightable, x")
-		text.append(f"{insn}pha")
-		text.append(f"{insn}lda {prefix}lowtable, x")
-		text.append(f"{insn}pha")
-		text.append(f"{insn}lda {numerator}")
-		text.append(f"{insn}rts")
-
-	# Limited by branch range to ~60
-	if fallback_unrolled_subtraction is True and max_iters > 60:
-		print("WARNING: unrolled subtraction not available - branch range limited", file=sys.stderr)
-		fallback_unrolled_subtraction = False
-		available=False
-
-	# Check high bit
-	if high_bit_check is True:
-		text.append(f"{label}{prefix}high_bit_denom")
-		text.append(f"{insn}cpx {numerator}")
-		text.append(f"{insn}bcc {prefix}return_1")
-		text.append(f"{insn}beq {prefix}return_1")
-		# Fall thru to return 0 if unrolled
-		if fallback_unrolled_subtraction is False:
+		# Check high bit
+		if high_bit_check is True:
+			text.append(f"{label}{prefix}high_bit_denom")
+			text.append(f"{insn}cpx {numerator}")
+			text.append(f"{insn}bcc {prefix}hdreturn_1")
+			text.append(f"{insn}beq {prefix}hdreturn_1")
 			text.append(f"{insn}lda #0")
 			text.append(f"{insn}rts")
-			text.append(f"{label}{prefix}return_1")
+			text.append(f"{label}{prefix}hdreturn_1")
 			text.append(f"{insn}lda #1")
 			text.append(f"{insn}rts")
-
-	with_shifting = False
-	with_subtraction = False
-	# Repeated subtraction, unrolled
-	if max_shifting_divider > 0:
-		with_shifting = True
-	if max_shifting_divider < 256:
-		with_subtraction = True
-
-	if with_shifting and with_subtraction:
-		text.append(f"{label}{prefix}use_sub")
-		text.append(f"{insn}cpx #{max_shifting_divider}+1")
-		# Branch to subtraction...
-		text.append(f"{insn}bcs {prefix}use_sub_unchecked")
-		# or fall through to shifting
-
-	if with_shifting:
-		if not with_subtraction:
-			text.append(f"{label}{prefix}use_sub")
-			if high_bit_check is True: # TODO are these & the only below ever doubled early?
-				text.append(f"{insn}bmi {prefix}high_bit_denom")
-			text.append(f"{label}{prefix}use_sub_unchecked")
-		text.append(f"{label}{prefix}use_shift")
-		text.append(f"{insn}lda #0")
-		text.append(f"{insn}ldx #8")
-		text.append(f"{insn}asl {numerator}")
-		text.append(f"{label}{prefix}divide_l1") 
-		text.append(f"{insn}rol")
-		text.append(f"{insn}cmp {denominator}")
-		text.append(f"{insn}bcc {prefix}divide_l2")
-		text.append(f"{insn}sbc {denominator}")
-		text.append(f"{label}{prefix}divide_l2")
-		text.append(f"{insn}rol {numerator}")
-		text.append(f"{insn}dex")
-		text.append(f"{insn}bne {prefix}divide_l1")
-		text.append(f"{insn}rts")
-
-	if with_subtraction:
-		if fallback_unrolled_subtraction is True:
-			midpoint = max(low_iters_max, (max_iters - 4) // 2) # offset because for very large tables the limit is the bcs use_sub
-			for i in range(0, midpoint):
-				text.append(f"{label}{prefix}return_{i}")
-				text.append(f"{insn}lda #{i}")
-				text.append(f"{insn}rts")
-			if not with_shifting:
-				text.append(f"{label}{prefix}use_sub")
-			if high_bit_check is True:
-				text.append(f"{insn}bmi {prefix}high_bit_denom")
-			text.append(f"{label}{prefix}use_sub_unchecked")
-			text.append(f"{insn}lda {numerator}")
-			text.append(f"{insn}sec")
-			for i in range(0, max_iters):
-				text.append(f"{insn}sbc {denominator}")
-				text.append(f"{insn}bcc {prefix}return_{i}")
-			text.append(f"{insn}lda #{max_iters}")
-			text.append(f"{insn}rts")
-			for i in range(midpoint, max_iters):
-				text.append(f"{label}{prefix}return_{i}")
-				text.append(f"{insn}lda #{i}")
-				text.append(f"{insn}rts")
-		else:
-			# Repeated subtraction, rolled
-			if not with_shifting:
-				text.append(f"{label}{prefix}use_sub")
-			if high_bit_check is True and early_high_bit is False:
-				text.append(f"{insn}bmi {prefix}high_bit_denom")
-			text.append(f"{label}{prefix}use_sub_unchecked")
-			text.append(f"{insn}lda {numerator}")
-			text.append(f"{insn}ldx #255")
-			text.append(f"{insn}sec")
-			text.append(f"{label}{prefix}use_sub_loop")
-			text.append(f"{insn}sbc {denominator}")
-			text.append(f"{insn}inx")
-			text.append(f"{insn}bcs {prefix}use_sub_loop")
-			text.append(f"{insn}txa")
-			text.append(f"{insn}rts")
-
-	# Jump table - make entries
-	factors = set()
-	jumpentries = []
-	jumpentries.append(divide_by_0)
-	for i in range(1, max_custom+1):
-		if i in CUSTOMS and (i in PRIMES or i <= max_full):
-			jumpentries.append(f"{prefix}divide_by_{i}")
-		else:
-			if use_factoring is True:
-				is_good, factor1, factor2 = factoring_is_good(max_full, i, fallback_unrolled_subtraction, high_bit_check, inlining)
-			else:
-				is_good = False
-			if is_good is True:
-				assert(i == 9) or (i == 15)
-				factors.add(i)
-				jumpentries.append(f"{prefix}divide_by_{i}")
-			else:
-				jumpentries.append(f"{prefix}use_sub_unchecked")
-
-	if use_choice_tree:
-		pass
+		
 	else:
 		for lh in ( ("low", "<"), ("high", ">") ):
 			low, lb = lh
@@ -566,149 +666,133 @@ def make_divide(max_custom, max_full, numerator, denominator, prefix, insn, labe
 			for entry in jumpentries:
 				text.append(f"{equb} {lb}({entry}-1)")
 
-	# Custom dividers
-	if max_custom >= 64:
-		text.append(f"{label}{prefix}divide_by_64")
+	if 48 in jumps:
+		text.append(f"{label}{prefix}divide_by_48")
 		text.append(f"{insn}lsr")
-	if max_custom >= 32:
-		text.append(f"{label}{prefix}divide_by_32")
+	if 24 in jumps:
+		text.append(f"{label}{prefix}divide_by_24")
 		text.append(f"{insn}lsr")
-		text.append(f"{insn}bpl {prefix}divide_by_16")
+	if 12 in jumps:
+		text.append(f"{label}{prefix}divide_by_12")
+		text.append(f"{insn}lsr")
+	if 6 in jumps:
+		text.append(f"{label}{prefix}divide_by_6")
+		text.append(f"{insn}lsr")
+	if 3 in jumps:
+		text.append(f"{label}{prefix}divide_by_3")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc #21")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}rts")
 
-	if max_full >= 17:
-		if max_custom >= 34:
-			text.append(f"{label}{prefix}divide_by_34")
-			text.append(f"{insn}lsr")
-		if max_custom >= 17:
-			text.append(f"{label}{prefix}divide_by_17")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}adc #0")
+	if 40 in jumps:
+		text.append(f"{label}{prefix}divide_by_40")
+		text.append(f"{insn}lsr")
+	if 20 in jumps:
+		text.append(f"{label}{prefix}divide_by_20")
+		text.append(f"{insn}lsr")
+	if 10 in jumps:
+		text.append(f"{label}{prefix}divide_by_10")
+		text.append(f"{insn}lsr")
+	if 5 in jumps:
+		text.append(f"{label}{prefix}divide_by_5")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc #13")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{label}{prefix}divide_by_5_end")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}rts")
 
-	if max_custom >= 16:
-		text.append(f"{label}{prefix}divide_by_16")
+	if 56 in jumps:
+		text.append(f"{label}{prefix}divide_by_56")
 		text.append(f"{insn}lsr")
-	if max_custom >= 8:
-		text.append(f"{label}{prefix}divide_by_8")
+	if 28 in jumps:
+		text.append(f"{label}{prefix}divide_by_28")
 		text.append(f"{insn}lsr")
-	if max_custom >= 4:
-		text.append(f"{label}{prefix}divide_by_4")
+	if 14 in jumps:
+		text.append(f"{label}{prefix}divide_by_14")
 		text.append(f"{insn}lsr")
-	if max_custom >= 2:
-		text.append(f"{label}{prefix}divide_by_2")
+	if 7 in jumps:
+		text.append(f"{label}{prefix}divide_by_7")
 		text.append(f"{insn}lsr")
-	text.append(f"{label}{prefix}divide_by_1")
-	if internal_div_by_0 is True:
-		text.append(f"{label}{prefix}divide_by_0")
-	text.append(f"{insn}rts")
-
-	if max_full >= 3:
-		if max_custom >= 48:
-			text.append(f"{label}{prefix}divide_by_48")
-			text.append(f"{insn}lsr")
-		if max_custom >= 24:
-			text.append(f"{label}{prefix}divide_by_24")
-			text.append(f"{insn}lsr")
-		if max_custom >= 12:
-			text.append(f"{label}{prefix}divide_by_12")
-			text.append(f"{insn}lsr")
-		if max_custom >= 6:
-			text.append(f"{label}{prefix}divide_by_6")
-			text.append(f"{insn}lsr")
-		if max_custom >= 3:
-			text.append(f"{label}{prefix}divide_by_3")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc #21")
-			text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		if inlining is True:
 			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}rts")
-
-	if max_full >= 5:
-		if max_custom >= 40:
-			text.append(f"{label}{prefix}divide_by_40")
-			text.append(f"{insn}lsr")
-		if max_custom >= 20:
-			text.append(f"{label}{prefix}divide_by_20")
-			text.append(f"{insn}lsr")
-		if max_custom >= 10:
-			text.append(f"{label}{prefix}divide_by_10")
-			text.append(f"{insn}lsr")
-		if max_custom >= 5:
-			text.append(f"{label}{prefix}divide_by_5")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc #13")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{label}{prefix}divide_by_5_end")
-			text.append(f"{insn}adc {numerator}")
+		
 			text.append(f"{insn}ror")
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}rts")
+		else:
+			text.append(f"{insn}bpl {prefix}divide_by_5_end")
 
-	if max_full >= 7:
-		if max_custom >= 56:
-			text.append(f"{label}{prefix}divide_by_56")
-			text.append(f"{insn}lsr")
-		if max_custom >= 28:
-			text.append(f"{label}{prefix}divide_by_28")
-			text.append(f"{insn}lsr")
-		if max_custom >= 14:
-			text.append(f"{label}{prefix}divide_by_14")
-			text.append(f"{insn}lsr")
-		if max_custom >= 7:
-			text.append(f"{label}{prefix}divide_by_7")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			if inlining is True:
-				text.append(f"{insn}adc {numerator}")
-			
-				text.append(f"{insn}ror")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}rts")
-			else:
-				text.append(f"{insn}bpl {prefix}divide_by_5_end")
+	if 36 in jumps:
+		text.append(f"{label}{prefix}divide_by_36")
+		text.append(f"{insn}lsr")
+	if 18 in jumps:
+		text.append(f"{label}{prefix}divide_by_18")
+		text.append(f"{insn}lsr")
+	if 9 in jumps:
+		text.append(f"{label}{prefix}divide_by_9")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{label}{prefix}divide_by_9_end")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}rts")
+	else:
+		text.append(f"{label}{prefix}divide_by_9")
+		text.append(f"{insn}jsr {prefix}divide_by_3")
+		text.append(f"{insn}bpl {prefix}divide_by_3")
 
-	if max_full >= 9 or 9 in factors:
-		if max_custom >= 36:
-			text.append(f"{label}{prefix}divide_by_36")
-			text.append(f"{insn}lsr")
-		if max_custom >= 18:
-			text.append(f"{label}{prefix}divide_by_18")
-			text.append(f"{insn}lsr")
-		if max_custom >= 9:
-			text.append(f"{label}{prefix}divide_by_9")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{label}{prefix}divide_by_9_end")
+	if 44 in jumps:
+		text.append(f"{label}{prefix}divide_by_44")
+		text.append(f"{insn}lsr")
+	if 22 in jumps:
+		text.append(f"{label}{prefix}divide_by_22")
+		text.append(f"{insn}lsr")
+	if 11 in jumps:
+		text.append(f"{label}{prefix}divide_by_11")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}lsr")
+		if inlining is True:
 			text.append(f"{insn}adc {numerator}")
 			text.append(f"{insn}ror")
 			text.append(f"{insn}lsr")
@@ -716,261 +800,221 @@ def make_divide(max_custom, max_full, numerator, denominator, prefix, insn, labe
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}rts")
 		else:
-			text.append(f"{label}{prefix}divide_by_9")
-			text.append(f"{insn}jsr divide_by_3")
-			text.append(f"{insn}bpl divide_by_3")
+			text.append(f"{insn}bpl {prefix}divide_by_9_end")
 
-	if max_full >= 11:
-		if max_custom >= 44:
-			text.append(f"{label}{prefix}divide_by_44")
-			text.append(f"{insn}lsr")
-		if max_custom >= 22:
-			text.append(f"{label}{prefix}divide_by_22")
-			text.append(f"{insn}lsr")
-		if max_custom >= 11:
-			text.append(f"{label}{prefix}divide_by_11")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
+	if 52 in jumps:
+		text.append(f"{label}{prefix}divide_by_52")
+		text.append(f"{insn}lsr")
+	if 26 in jumps:
+		text.append(f"{label}{prefix}divide_by_26")
+		text.append(f"{insn}lsr")
+	if 13 in jumps:
+		text.append(f"{label}{prefix}divide_by_13")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}clc")
+		if inlining is True:
 			text.append(f"{insn}adc {numerator}")
 			text.append(f"{insn}ror")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			if inlining is True:
-				text.append(f"{insn}adc {numerator}")
-				text.append(f"{insn}ror")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}rts")
-			else:
-				text.append(f"{insn}bpl {prefix}divide_by_9_end")
-
-	if max_full >= 13:
-		if max_custom >= 52:
-			text.append(f"{label}{prefix}divide_by_52")
-			text.append(f"{insn}lsr")
-		if max_custom >= 26:
-			text.append(f"{label}{prefix}divide_by_26")
-			text.append(f"{insn}lsr")
-		if max_custom >= 13:
-			text.append(f"{label}{prefix}divide_by_13")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			
-			text.append(f"{insn}clc")
-			if inlining is True:
-				text.append(f"{insn}adc {numerator}")
-				text.append(f"{insn}ror")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}rts")
-			else:
-				text.append(f"{insn}bpl {prefix}divide_by_9_end")
-
-	if max_full >= 15 or 15 in factors:
-		if max_custom >= 60:
-			text.append(f"{label}{prefix}divide_by_60")
-			text.append(f"{insn}lsr")
-		if max_custom >= 30:		
-			text.append(f"{label}{prefix}divide_by_30")
-			text.append(f"{insn}lsr")
-		if max_custom >= 15:
-			text.append(f"{label}{prefix}divide_by_15")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc #4")
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}lsr")
-			if inlining is True:
-				text.append(f"{insn}adc {numerator}")
-				text.append(f"{insn}ror")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}rts")
-			else:
-				text.append(f"{insn}jmp {prefix}divide_by_9_end")
+			text.append(f"{insn}rts")
 		else:
-			text.append(f"{label}{prefix}divide_by_15")
-			text.append(f"{insn}jsr divide_by_3")
-			text.append(f"{insn}bpl divide_by_5")
+			text.append(f"{insn}bpl {prefix}divide_by_9_end")
 
-	if max_full >= 19:
-		if max_custom >= 76:
-			text.append(f"{label}{prefix}divide_by_76")
-			text.append(f"{insn}lsr")
-		if max_custom >= 38:
-			text.append(f"{label}{prefix}divide_by_38")
-			text.append(f"{insn}lsr")
-		if max_custom >= 19:
-			text.append(f"{insn}lsr")
+	if 60 in jumps:
+		text.append(f"{label}{prefix}divide_by_60")
+		text.append(f"{insn}lsr")
+	if 30 in jumps:		
+		text.append(f"{label}{prefix}divide_by_30")
+		text.append(f"{insn}lsr")
+	if 15 in jumps:
+		text.append(f"{label}{prefix}divide_by_15")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc #4")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		if inlining is True:
 			text.append(f"{insn}adc {numerator}")
 			text.append(f"{insn}ror")
 			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}adc {numerator}")
-			if inlining is True:
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}rts")
-			else:
-				text.append(f"{insn}bpl {prefix}divide_by_21_end")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}rts")
+		else:
+			text.append(f"{insn}jmp {prefix}divide_by_9_end")
+	else:
+		text.append(f"{label}{prefix}divide_by_15")
+		text.append(f"{insn}jsr {prefix}divide_by_3")
+		text.append(f"{insn}bpl {prefix}divide_by_5")
 
-	if max_full >= 21:
-		if max_custom >= 42:
-			text.append(f"{label}{prefix}divide_by_42")
-			text.append(f"{insn}lsr")
-		if max_custom >= 21:
-			text.append(f"{label}{prefix}divide_by_21")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{label}{prefix}divide_by_21_end_lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{label}{prefix}divide_by_21_end_adc")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{label}{prefix}divide_by_21_end_ror")
-			text.append(f"{insn}ror")
-			text.append(f"{label}{prefix}divide_by_21_end")
+	if 76 in jumps:
+		text.append(f"{label}{prefix}divide_by_76")
+		text.append(f"{insn}lsr")
+	if 38 in jumps:
+		text.append(f"{label}{prefix}divide_by_38")
+		text.append(f"{insn}lsr")
+	if 19 in jumps:
+		text.append(f"{label}{prefix}divide_by_19")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}adc {numerator}")
+		if inlining is True or 21 not in jumps:
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}rts")
+		else:
+			text.append(f"{insn}bpl {prefix}divide_by_21_end")
 
-	if max_full >= 23:
-		if max_custom >= 46:
-			text.append(f"{label}{prefix}divide_by_46")
-			text.append(f"{insn}lsr")
-		if max_custom >= 23:
-			text.append(f"{label}{prefix}divide_by_23")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			if inlining is True:
-				text.append(f"{insn}adc {numerator}")
-				text.append(f"{insn}ror")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}rts")
-			else:
-				text.append(f"{insn}bpl {prefix}divide_by_21_end_adc")
+	if 42 in jumps:
+		text.append(f"{label}{prefix}divide_by_42")
+		text.append(f"{insn}lsr")
+	if 21 in jumps:
+		text.append(f"{label}{prefix}divide_by_21")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{label}{prefix}divide_by_21_end_lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{label}{prefix}divide_by_21_end_adc")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{label}{prefix}divide_by_21_end_ror")
+		text.append(f"{insn}ror")
+		text.append(f"{label}{prefix}divide_by_21_end")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}rts")
 
-	if max_full >= 25:
-		if max_custom >= 50:
-			text.append(f"{label}{prefix}divide_by_50")
-			text.append(f"{insn}lsr")
-		if max_custom >= 25:
-			text.append(f"{label}{prefix}divide_by_25")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
-			if inlining is True:
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}adc {numerator}")
-				text.append(f"{insn}ror")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}rts")
-			else:
-				text.append(f"{insn}bpl {prefix}divide_by_21_end_lsr")
-
-	if max_full >= 27:
-		if max_custom >= 54:
-			text.append(f"{label}{prefix}divide_by_54")
-			text.append(f"{insn}lsr")
-		if max_custom >= 27:
-			text.append(f"{label}{prefix}divide_by_27")
-			text.append(f"{insn}lsr")
+	if 46 in jumps:
+		text.append(f"{label}{prefix}divide_by_46")
+		text.append(f"{insn}lsr")
+	if 23 in jumps:
+		text.append(f"{label}{prefix}divide_by_23")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		if inlining is True:
 			text.append(f"{insn}adc {numerator}")
 			text.append(f"{insn}ror")
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}lsr")
-			if inlining is True:
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}adc {numerator}")
-				text.append(f"{insn}ror")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}rts")
-			else:
-				text.append(f"{insn}bpl {prefix}divide_by_21_end_lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}rts")
+		else:
+			text.append(f"{insn}bpl {prefix}divide_by_21_end_adc")
 
-	if max_full >= 29:
-		if max_custom >= 58:
-			text.append(f"{label}{prefix}divide_by_58")
+	if 50 in jumps:
+		text.append(f"{label}{prefix}divide_by_50")
+		text.append(f"{insn}lsr")
+	if 25 in jumps:
+		text.append(f"{label}{prefix}divide_by_25")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		if inlining is True:
 			text.append(f"{insn}lsr")
-		if max_custom >= 29:
-			text.append(f"{label}{prefix}divide_by_29")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}lsr")
-			text.append(f"{insn}adc {numerator}")
-			text.append(f"{insn}ror")
 			text.append(f"{insn}adc {numerator}")
 			text.append(f"{insn}ror")
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}lsr")
-			if inlining is True:
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}adc {numerator}")
-				text.append(f"{insn}ror")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}rts")
-			else:
-				text.append(f"{insn}bpl {prefix}divide_by_21_end_lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}rts")
+		else:
+			text.append(f"{insn}bpl {prefix}divide_by_21_end_lsr")
 
-	if max_full >= 31:
-		if max_custom >= 62:
-			text.append(f"{label}{prefix}divide_by_62")
+	if 54 in jumps:
+		text.append(f"{label}{prefix}divide_by_54")
+		text.append(f"{insn}lsr")
+	if 27 in jumps:
+		text.append(f"{label}{prefix}divide_by_27")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		if inlining is True:
 			text.append(f"{insn}lsr")
-		if max_custom >= 31:
-			text.append(f"{label}{prefix}divide_by_31")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}lsr")
-			if inlining is True:
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}adc {numerator}")
-				text.append(f"{insn}ror")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}lsr")
-				text.append(f"{insn}rts")
-			else:
-				text.append(f"{insn}bpl {prefix}divide_by_21_end_lsr")
+			text.append(f"{insn}rts")
+		else:
+			text.append(f"{insn}bpl {prefix}divide_by_21_end_lsr")
+
+	if 58 in jumps:
+		text.append(f"{label}{prefix}divide_by_58")
+		text.append(f"{insn}lsr")
+	if 29 in jumps:
+		text.append(f"{label}{prefix}divide_by_29")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}adc {numerator}")
+		text.append(f"{insn}ror")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		if inlining is True:
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}rts")
+		else:
+			text.append(f"{insn}bpl {prefix}divide_by_21_end_lsr")
+
+	if 62 in jumps:
+		text.append(f"{label}{prefix}divide_by_62")
+		text.append(f"{insn}lsr")
+	if 31 in jumps:
+		text.append(f"{label}{prefix}divide_by_31")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		text.append(f"{insn}lsr")
+		if inlining is True:
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}adc {numerator}")
+			text.append(f"{insn}ror")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}lsr")
+			text.append(f"{insn}rts")
+		else:
+			text.append(f"{insn}bpl {prefix}divide_by_21_end_lsr")
 
 	# Analyze size
 	size=0
@@ -1123,7 +1167,11 @@ def blended_best_time(lists):
 			vsum += value
 		indexl.append((vsum, 0, 0, 0, 0, size, k))
 	return best_time(indexl)
-	
+
+# Return true if the set of args is acceptable
+def try_make_divide(args):
+	i, j, _, factoring, inlining, _, choice_tree, max_shifting_divider, stats, _, unrolled, high_bit, early_high_bit, _ = args
+	return make_divide(i, j, "", "", "", "", "", "", "", max_shifting_divider=max_shifting_divider, use_choice_tree=choice_tree, use_factoring=factoring, inlining=inlining, with_stats=stats, fallback_unrolled_subtraction=unrolled, high_bit_check=high_bit, early_high_bit=early_high_bit, dry_run=True)
 
 def do_make_divide(args):
 	num = "muldiv_temp_t"
@@ -1131,19 +1179,17 @@ def do_make_divide(args):
 	equb = "!byte"
 	comment = "; "
 	label = ""
-	i, j, prefix, factoring, inlining, style, choice_tree, max_shifting_divider, stats, assemble = args
-	avail1, string1, cycles1, m64_1, m16_1, median1, worst1, size1 = make_divide(i, j, num, denom, prefix+"_un_", "\t", label, equb, comment, max_shifting_divider=max_shifting_divider, use_choice_tree=choice_tree, use_factoring=factoring, inlining=inlining, with_stats=stats)
-	avail2, string2, cycles2, m64_2, m16_2, median2, worst2, size2 = make_divide(i, j, num, denom, prefix+"_rn_", "\t", label, equb, comment, max_shifting_divider=max_shifting_divider, use_choice_tree=choice_tree, fallback_unrolled_subtraction=False, use_factoring=factoring, inlining=inlining, with_stats=stats)
-	avail3, string3, cycles3, m64_3, m16_3, median3, worst3, size3 = make_divide(i, j, num, denom, prefix+"_ul_", "\t", label, equb, comment, max_shifting_divider=max_shifting_divider, use_choice_tree=choice_tree, high_bit_check=True, use_factoring=factoring, inlining=inlining, with_stats=stats)
-	avail4, string4, cycles4, m64_4, m16_4, median4, worst4, size4 = make_divide(i, j, num, denom, prefix+"_rl_", "\t", label, equb, comment, max_shifting_divider=max_shifting_divider, use_choice_tree=choice_tree, fallback_unrolled_subtraction=False, high_bit_check=True, use_factoring=factoring, inlining=inlining, with_stats=stats)
-	avail5, string5, cycles5, m64_5, m16_5, median5, worst5, size5 = make_divide(i, j, num, denom, prefix+"_ue_", "\t", label, equb, comment, max_shifting_divider=max_shifting_divider, use_choice_tree=choice_tree, high_bit_check=True, early_high_bit=True, use_factoring=factoring, inlining=inlining, with_stats=stats)
-	avail6, string6, cycles6, m64_6, m16_6, median6, worst6, size6 = make_divide(i, j, num, denom, prefix+"_re_", "\t", label, equb, comment, max_shifting_divider=max_shifting_divider, use_choice_tree=choice_tree, fallback_unrolled_subtraction=False, high_bit_check=True, early_high_bit=True, use_factoring=factoring, inlining=inlining, with_stats=stats)
+
+	i, j, prefix, factoring, inlining, style, choice_tree, max_shifting_divider, stats, assemble, unrolled, high_bit, early_high_bit, first = args
+
+	avail, string, cycles, m64, m16, median, worst, size = make_divide(i, j, num, denom, prefix+"_un_", "\t", label, equb, comment, max_shifting_divider=max_shifting_divider, use_choice_tree=choice_tree, use_factoring=factoring, inlining=inlining, with_stats=stats, fallback_unrolled_subtraction=unrolled, high_bit_check=high_bit, early_high_bit=early_high_bit)
+
 	result = None
 	binary = None
 	if assemble is True:
 		prolog=f"{num}=0\n{denom}=1\n* = $200\n"
 		with tempfile.NamedTemporaryFile('w') as infile:
-			src = "\n\n".join([prolog, string1, string2, string3, string4, string5, string6])
+			src = "\n\n".join([prolog, string])
 			infile.write(src)
 			infilename = infile.name
 			infile.flush()
@@ -1152,16 +1198,11 @@ def do_make_divide(args):
 					result = subprocess.run(["acme", "-v2", "-o", outfile.name, "-r", reportfile.name, infilename], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True).stdout
 					binary = f"Binary output {os.path.getsize(outfile.name)} bytes\n" + "Source:\n" + src + "\n\nReport:\n" + reportfile.read()
 	
-	return (i, j, prefix, factoring, inlining, style, choice_tree, max_shifting_divider, result, binary, \
-																	avail1, string1, cycles1, m64_1, m16_1, median1, worst1, size1, \
-																	avail2, string2, cycles2, m64_2, m16_2, median2, worst2, size2, \
-																	avail3, string3, cycles3, m64_3, m16_3, median3, worst3, size3, \
-																	avail4, string4, cycles4, m64_4, m16_4, median4, worst4, size4, \
-																	avail5, string5, cycles5, m64_5, m16_5, median5, worst5, size5, \
-																	avail6, string6, cycles6, m64_6, m16_6, median6, worst6, size6)
+	return (i, j, prefix, factoring, inlining, style, choice_tree, max_shifting_divider, unrolled, high_bit, early_high_bit, result, binary, \
+			avail, string, cycles, m64, m16, median, worst, size, first)
 
 def single(args):
-	avail, string, m256, m64, m16, median, worst, size = make_divide(args.max_custom, args.max_full, args.numerator, args.denominator, args.prefix, args.instruction, args.label, args.equb, args.comment,max_shifting_divider= args.max_shifting, use_choice_tree=args.choice_tree, use_factoring=args.factoring, inlining=args.inlining, with_stats=args.stats)
+	avail, string, m256, m64, m16, median, worst, size = make_divide(args.max_custom, args.max_full, args.numerator, args.denominator, args.prefix, args.instruction, args.label, args.equb, args.comment, max_shifting_divider=args.max_shifting, use_choice_tree=args.choice_tree, use_factoring=args.factoring, inlining=args.inlining, with_stats=args.stats)
 	# Report stats
 	print(f"Divider generated. Size {size} bytes.")
 	if args.stats is True:
@@ -1196,6 +1237,8 @@ def main():
 	parser.add_argument('-t', '--test', action="store_true", help="produce all possibilities, save stats and a TOML description")
 	parser.add_argument('-s', '--stats', action="store_true", help="generate statistics (this makes the test much slower)")
 	parser.add_argument('-a', '--assemble', action="store_true", help="when testing, run ACME assembler to test correctness of each output")
+	parser.add_argument('-q', '--quick', action="store_true", help="when testing, run a smaller set of cases")
+	parser.add_argument('-v', '--verbose', action="store_true", help="when testing,include all (not just failing) cases in asmout.txt")
 
 	args = parser.parse_args()
 
@@ -1221,32 +1264,75 @@ def test(args):
 	full_list = []
 	futures = []
 
+	max_cases = CUSTOMS
+	shift_cases = (0, 4, 8, 12, 16, 24, 32, 48, 64, 256)
+	if args.quick is True:
+		max_cases = {
+			1, 2, 4,
+			6, 8, 10, 12,
+			15, 18, 23, 28,
+			34, 40, 52, 64
+			}
+		shift_cases = (0, 4, 12, 48, 256)
+	full_cases = max_cases
+
+	# Over 15: ignore factoring, allow inlining, ignore choice
+	# 7 to 15: allow factoring, allow inlining, ignore choice
+	# 5 to 7:  allow factoring, ignore inlining, ignore choice
+	# <5:      allow factoring, ignore inlining, allow choice
+	fic_table_over_15	= ( (False, False, False), (False, True, False) )
+	fic_table_7_15		= ( (False, False, False), (False, True, False), (True, False, False), (True, True, False) )
+	fic_table_5_7		= ( (False, False, False), (True, False, False) )
+	fic_table_under_5	= ( (False, False, False), (True, False, False), (False, False, True), (True, False, True) )
+
+	tags = ( (False, False, False, "_rn"), (True, False, False, "_rl",), (True, True, False, "_re"), (False, False, True, "_un"), (True, False, True, "_ul",), (True, True, True, "_ue") )
+
 	# Set up futures for all possibilities
-	with concurrent.futures.ProcessPoolExecutor() as executor:
-		for i in CUSTOMS:
-			for j in CUSTOMS:
-				for factoring in (True, False):
-					for inlining in (True, False):
-						for choice_tree in (True, False):
-							for max_shifting_divider in (0, i+4, i+8, i+12, i+16, i+24, i+32, i+48, i+64, 256):
-								style = f"{i}_{j}"
-								if i >= 2 and j >= 2 and j <= i and (factoring is False or i < 15) and (inlining is False or i >= 7) and (choice_tree is False or i <= 7):
-									prefix = f"djbt_{style}"
-									pargs = (i, j, prefix, factoring, inlining, style, choice_tree, max_shifting_divider, args.stats, args.assemble)
-									futures.append(executor.submit(do_make_divide, pargs))
+	cases=0
+	with concurrent.futures.InterpreterPoolExecutor() as executor:
+		for i in max_cases:
+			if i >= 2:
+				offset_cases = []
+				for m in shift_cases:
+					if m != 0 and m != 256:
+						offset_cases.append(m + i)
+					else:
+						offset_cases.append(m)
+				fic_table = fic_table_over_15
+				if i <= 15:
+					fic_table = fic_table_7_15
+					if i < 7:
+						fic_table = fic_table_5_7
+						if i <= 5:
+							fic_table = fic_table_under_5
+				for j in full_cases:
+					if j <= i:
+						ij_style = f"{i}_{j}"
+						for factoring, inlining, choice_tree in fic_table:
+							if (j != i) and (choice_tree is True):
+								continue
+							for max_shifting_divider in offset_cases:
+								first = True
+								for high_bit, early_high_bit, unrolled, tag in tags:
+									#if i >= 2 and j >= 2 and j <= i and (factoring is False or i <= 15) and (inlining is False or i >= 7) and (choice_tree is False or i <= 5):
+									pargs = (i, j, "", factoring, inlining, "", choice_tree, max_shifting_divider, args.stats, args.assemble, unrolled, high_bit, early_high_bit, first)
+									if try_make_divide(pargs) is True:
+										style = f"{ij_style}{tag}"
+										prefix = f"djbt_{style}"
+										futures.append(executor.submit(do_make_divide, pargs))
+										cases += 1
+										first = False
+					else:
+						break
+	print(f"Running {cases} test cases...")
 
 	# Run them all
 	asmout = []
+	errors = 0
+	success = 0
 	for future in futures:
 		returned = future.result()
-		i, j, prefix, factoring, inlining, style, choice_tree, max_shifting_divider, result, binary, \
-																	avail1, string1, cycles1, m64_1, m16_1, median1, worst1, size1, \
-																	avail2, string2, cycles2, m64_2, m16_2, median2, worst2, size2, \
-																	avail3, string3, cycles3, m64_3, m16_3, median3, worst3, size3, \
-																	avail4, string4, cycles4, m64_4, m16_4, median4, worst4, size4, \
-																	avail5, string5, cycles5, m64_5, m16_5, median5, worst5, size5, \
-																	avail6, string6, cycles6, m64_6, m16_6, median6, worst6, size6 = returned
-
+		i, j, prefix, factoring, inlining, style, choice_tree, max_shifting_divider, unrolled, high_bit, early_high_bit, result, binary, avail, string, cycles, m64, m16, median, worst, size, first = returned
 		cwith = "No"
 		if choice_tree is True:
 			cwith = "Yes" 
@@ -1260,33 +1346,45 @@ def test(args):
 			iwith = "Yes" 
 			style = style + "_i"
 		style = style + f"_s{max_shifting_divider}"
+		uwith = "No"
+		if unrolled is True:
+			uwith = "Yes"
+		hwith = "No"
+		if high_bit is True:
+			hwith = "Late"
+			if early_high_bit is True:
+				hwith = "Early"
 
-		if avail1:
-			add_line(i, j, fwith, iwith, cwith, max_shifting_divider,"Yes", "No", size1, cycles1, m64_1, m16_1, median1, worst1, mean_list, mean_64_list, mean_16_list, median_list, worst_list, full_list, args.stats, string1, f"{style}UN", args.numerator, args.denominator)
-		if avail2:
-			add_line(i, j, fwith, iwith, cwith, max_shifting_divider,"No", "No", size2, cycles2, m64_2, m16_2, median2, worst2, mean_list, mean_64_list, mean_16_list, median_list, worst_list, full_list, args.stats, string2, f"{style}RN", args.numerator, args.denominator)
-		if avail3:
-			add_line(i, j, fwith, iwith, cwith, max_shifting_divider,"Yes", "Late", size3, cycles3, m64_3, m16_3, median3, worst3, mean_list, mean_64_list, mean_16_list, median_list, worst_list, full_list, args.stats, string3, f"{style}UH", args.numerator, args.denominator)
-		if avail4:
-			add_line(i, j, fwith, iwith, cwith, max_shifting_divider,"No", "Late", size4, cycles4, m64_4, m16_4, median4, worst4, mean_list, mean_64_list, mean_16_list, median_list, worst_list, full_list, args.stats, string4, f"{style}RH", args.numerator, args.denominator)
-		if avail5:
-			add_line(i, j, fwith, iwith, cwith, max_shifting_divider, "Yes", "Early", size5, cycles5, m64_5, m16_5, median5, worst5, mean_list, mean_64_list, mean_16_list, median_list, worst_list, full_list, args.stats, string5, f"{style}UE", args.numerator, args.denominator)
-		if avail6:
-			add_line(i, j, fwith, iwith, cwith, max_shifting_divider, "No", "Early", size6, cycles6, m64_6, m16_6, median6, worst6, mean_list, mean_64_list, mean_16_list, median_list, worst_list, full_list, args.stats, string6, f"{style}RE", args.numerator, args.denominator)
-		full_list.append(bar)
+		if avail:
+			if first:
+				full_list.append(bar)
+			add_line(i, j, fwith, iwith, cwith, max_shifting_divider, uwith, hwith, size, cycles, m64, m16, median, worst, mean_list, mean_64_list, mean_16_list, median_list, worst_list, full_list, args.stats, string, f"{style}{tag}", args.numerator, args.denominator)
 
-		if result is not None:
-			asmout.append(str(result))
+		error = (binary is None or result is None or "Error" in result)
+		if error is True:
+			errors += 1
+		success += 1
+
+		if args.verbose or error:
+			asmout.append(f"Results for max_custom {i}, max_full {j}, inlining {iwith}, factoring {factoring}, choice {cwith}, max_shifting {max_shifting_divider}:")
+			if result is None:
+				asmout.append("(no result)")
+			else:
+				asmout.append(str(result))
 			if binary is None:
 				asmout.append("(no binary output)")
 			else:
 				asmout.append(str(binary))
-				asmout.append(str(binary))
 			asmout.append("")
+	full_list.append(bar)
 
-	if len(asmout) > 0:
-		with open("asmout.txt", "w") as file:
-			file.write("\n".join(asmout))
+	with open("asmout.txt", "w") as file:
+		header = f"Ran {errors+success} test cases, {errors} errors, {success} successful\n"
+		file.write(header)
+		for entry in asmout:
+			file.write("\n")
+			file.write(entry)
+		file.write("\n")
 
 	# Add stats
 	out = []
