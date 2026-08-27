@@ -1,5 +1,6 @@
 #!/usr/bin/python
-
+""" A parameterizable division routine builder for 6502 """
+ 
 ##################################################################################
 #
 # A parameterizable division routine builder for 6502.
@@ -66,19 +67,8 @@
 
 # Environment:
 #
-# TODO reg in-out?
-#   - for denom or num in X Y A or memory, and wrapper for return in X Y or memory, done
-#   - option to preserve on stack those registers not taking or returning? (makes the wrapper more complex though)
-#	- return presents a problem in that there are a lot of RTS and if they aren't one byte tables change.
-#	- wrap, if you really want this? Same with stack saves
-#	- Replacing RTS with JMP to STA;RTS is faster than JSR;RTS;STA;RTS (wrapper) though.
-#	- there are usually a lot of RTSs (either unrolled, or table), but not always.
-
 # TODO short unrolls are not the best (= replacement for few iters)??
 # TODO proper documentation! (or at least a README.md)
-# TODO pylint?
-# TODO option to remove one prime (only useful if there is one that doesn't pay for itself - 29?, 'allow even above j'
-#		might be more useful.)
 
 # TODO examples for help:
 
@@ -94,6 +84,14 @@
 # ./makedivide.py -c 8 -a
 # ... and emulate it, showing actual time taken.
 
+# Typical times and output sizes:
+# pypy	-E -s -Q -X			0.8s	<1MB
+# pypy	-E -s -Q			11s
+# pypy	-E -s -q -X			9.7s
+# pypy	-E -s -r 2000		36s
+# pypy	-E -s -X			16m		336MB
+# pypy	-E -s				7h40	336MB
+
 import argparse
 import concurrent.futures
 import copy
@@ -105,9 +103,15 @@ import sys
 import tempfile
 import time
 
+has_tqdm = True
+try:
+	import tqdm
+except ModuleNotFoundError:
+	print("Warning: unable to find tqdm")
+	has_tqdm = False
 
 # Maximum length of a command line output in stats
-MAX_COMMAND = 38
+MAX_COMMAND = 40
 
 # Longer than any actual code, the timeout
 BAD_CYCLES = 4000
@@ -188,6 +192,7 @@ NOT_POSS = ": !warn: Half pointer not possible"
 
 
 class Divider:
+	""" A class containing a set of parameters which can be used to build a divider """ 
 	def __init__(self, args, *, max_custom = None, max_full = None, numerator = None, denominator = None, prefix = None, \
 		insn = None, label = None, equb = None, comment = None, style=None, emulate=False, \
 		fallback_unrolled_subtraction = False, \
@@ -195,7 +200,7 @@ class Divider:
 		use_factoring=False, inlining=False, use_choice_tree=False, with_stats=False, \
 		half_table=False, use_smc=False, fast_stats=False, assemble=False, first=False, with_65c02 = False, \
 		error_vector=False, max_shifting_divider=0, denominator_from=None, numerator_from=None, result_to=None, \
-		random_stats=0, known_denominator=0):
+		random_stats=0, known_denominator=0, skip_custom=0):
 		""" Create a Divider from command line args ("args") and separate args for test modes, etc. """
 
 		if max_custom is None:
@@ -282,6 +287,8 @@ class Divider:
 		assert result_to is not None
 		if args.random_stats != 0:
 			random_stats = args.random_stats
+		if args.skip_custom != 0:
+			skip_custom = args.skip_custom
 		# First is not from args
 		if args.known_denominator is not None:
 			known_denominator=args.known_denominator
@@ -289,6 +296,7 @@ class Divider:
 		self.emulate = emulate
 		self.assemble = assemble
 		self.first = first
+		self.skip_custom = skip_custom
 		self.max_custom = max_custom
 		self.max_full = max_full
 		self.numerator = numerator
@@ -651,6 +659,9 @@ class Divider:
 			else:
 				text.append(f"{insn}bpl {prefix}divide_by_5_end")
 
+		if 72 in jumps:
+			text.append(f"{label}{prefix}divide_by_72")
+			text.append(f"{insn}lsr")
 		if 36 in jumps:
 			text.append(f"{label}{prefix}divide_by_36")
 			text.append(f"{insn}lsr")
@@ -964,6 +975,9 @@ class Divider:
 			else:
 				powers_of_2.append(f"{insn}bpl {prefix}divide_by_16")
 
+		if 68 in jumps:
+			powers_of_2.append(f"{label}{prefix}divide_by_68")
+			powers_of_2.append(f"{insn}lsr")
 		if 34 in jumps:
 			powers_of_2.append(f"{label}{prefix}divide_by_34")
 			powers_of_2.append(f"{insn}lsr")
@@ -1045,7 +1059,7 @@ class Divider:
 
 	# The main entry point: see top of file for documentation
 	def make_divide(self, dry_run=False):
-		""" The main entry point: make a divsion routine, or if dry_run is set test whether it is possible to do so. """
+		""" The main entry point: make a division routine, or if dry_run is set test whether it is possible to do so. """
 		available = True
 		max_custom = self.max_custom
 		early_high_bit = self.early_high_bit
@@ -1076,6 +1090,27 @@ class Divider:
 		if self.high_bit_check is True and self.fallback_unrolled_subtraction is True:
 			low_iters_max = 2
 
+		if (self.skip_custom > 0 and self.skip_custom < 3) or self.skip_custom >= self.max_custom or self.skip_custom in (2,4,8,16):
+			if dry_run is True:
+				return False
+			available = False
+			self.skip_custom = 0
+			print("WARNING: skip_custom out of range. disabled")
+
+		if self.skip_custom > 0 and self.inlining is False:
+			if dry_run is True:
+				return False
+			available = False
+			self.inlining = True
+			print("WARNING: skip_custom requires inlining, enabled")
+
+		if self.skip_custom > 0 and self.use_choice_tree is True:
+			if dry_run is True:
+				return False
+			available = False
+			self.skip_custom = 0
+			print("WARNING: skip_custom and choice_tree are incompatible, skip_custom disabled")
+
 		# Reduce if there is wasted space at the top of the table
 		while max_custom not in CUSTOMS:
 			max_custom -= 1
@@ -1083,11 +1118,17 @@ class Divider:
 		# Build a table of jumps - determine which are available
 		jumps = set()
 		for i in range(0, max_custom+1):
-			jumps.add(i)
-			if i > 1:
-				for j in range(1, 7):
-					if (i*(1<<j)) <= self.max_full:
-						jumps.add(i*(1<<j))
+			if i in CUSTOMS:
+				jumps.add(i)
+				if i > 1:
+					for j in range(1, 7):
+						if (i*(1<<j)) <= self.max_full:
+							jumps.add(i*(1<<j))
+
+		if self.skip_custom != 0:
+			for j in range(0, 7):
+				if self.skip_custom*(1<<j) in jumps:
+					jumps.remove(self.skip_custom*(1<<j))
 
 		fallback_unrolled_subtraction = self.fallback_unrolled_subtraction
 		divide_by_0 = self.divide_by_0
@@ -1105,8 +1146,10 @@ class Divider:
 		jumpentries.append(f"{prefix}divide_by_0")
 		max_custom_avail = max_custom
 		has_jump_to_sub = False
+		ijumps = set(jumps)
+
 		for i in range(1, max_custom+1):
-			if i in CUSTOMS and (i in PRIMES or i <= self.max_full):
+			if i in ijumps:#CUSTOMS and (i in PRIMES or i <= self.max_full) and not (i == self.skip_custom):
 				jumpentries.append(f"{prefix}divide_by_{i}")
 			else:
 				if self.use_factoring is True:
@@ -1129,8 +1172,7 @@ class Divider:
 		# Find highest point which can be handled without the generic function
 		max_custom_avail = max(1, max_custom_avail)
 
-		max_iters = 255 // max_custom_avail
-		max_iters = max(low_iters_max, max_iters)
+		max_iters = max(255 // max_custom_avail, low_iters_max)
 
 		with_shifting = False
 		with_subtraction = False
@@ -1167,7 +1209,6 @@ class Divider:
 			if max_custom > max_limit:
 				if dry_run is True:
 					return False
-				# FIXME log, or set a return fn?
 				print(f"WARNING: max custom denominator exceeds the limit of {max_limit} for half-tables with these args (inlining, " \
 					"shifting vs subtraction as fallback and whether there are gaps in the table all affect it.", file=sys.stderr)
 				max_custom = max_limit
@@ -1254,7 +1295,10 @@ class Divider:
 
 		text = []
 		text.append(f"{comment}Division, 8 / 8 bits.")
-		# FIXME args from comment?
+		text.append(f"{comment}Generated by makedivide.py {self.command_words()[0]}")
+		if self.half_table is True:
+			text.append(f"{comment}This code must be page aligned!")
+		text.append(f"{comment}Entry point is at {prefix}entry")
 
 		powers_of_2 = self.make_powers_of_2(jumps, internal_div_by_0, divide_by_0)
 
@@ -1394,7 +1438,6 @@ class Divider:
 					text.append(f"{insn}rts")
 				if not with_shifting:
 					text.append(f"{label}{prefix}use_sub")
-					#FIXME cause OOR
 					if self.high_bit_check is True and self.early_high_bit is False:
 						text.append(f"{insn}bmi {prefix}high_bit_denom")
 				if use_sub_bounce is False:
@@ -1561,9 +1604,6 @@ class Divider:
 	def get_size_and_stats(self, text, jumps, available):
 		""" Find the size of code generated, and optionally the estimated time taken """
 		insn = self.insn
-		equb = self.equb
-		comment = self.comment
-		label = self.label
 		# Analyze size
 		size=0
 		sizes = [
@@ -1583,13 +1623,13 @@ class Divider:
 			(f"{insn}sbc", 2),
 			(f"{insn}b", 2),
 			(f"{insn}j", 3),
-			(f"{equb}", 1),
+			(f"{self.equb}", 1),
 			(f"{insn}ld", 2),
 			(f"{insn}st", 2),
 			(f"{insn}cp", 2),
 			(f"{insn}cmp", 2),
-			(f"{comment}", 0),
-			(f"{label}", 0),
+			(f"{self.comment}", 0),
+			(f"{self.label}", 0),
 		]
 		for line in text:
 			ok=False
@@ -1603,11 +1643,11 @@ class Divider:
 				print(f"Instruction not recognized, {line}", file=sys.stderr)
 
 		if self.with_stats is True:
-			mean,mean64,mean16,median,worst=self.stats_cycles(jumps)
+			stat = self.stats_cycles(jumps)
 		else:
-			mean,mean64,mean16,median,worst=(0,0,0,0,0)
+			stat = (0,0,0,0,0)
 		text.append("")
-		return (available, "\n".join(text), mean,mean64,mean16,median,worst, size)
+		return (available, "\n".join(text), stat[0], stat[1], stat[2], stat[3], stat[4], size)
 
 	# Return true if the set of args is acceptable
 	def try_make_divide(self):
@@ -1615,8 +1655,8 @@ class Divider:
 		return self.make_divide(dry_run=True)
 
 	def do_make_divide(self):
-		num = self.numerator
-		denom = self.denominator
+		""" Make a divider,  optionally assemble and emulate """ 
+		num, denom = self.numerator, self.denominator
 
 		avail, string, cycles, m64, m16, median, worst, size = self.make_divide()
 
@@ -1672,11 +1712,11 @@ class Divider:
 						ecycles, em64, em16, emedian, eworst, size, emulation_result)
 		return self
 
-	def add_line(self, stat):
-		_, _, _, _, mean, mean64, mean16, median, worst, emean, emean64, emean16, emedian, eworst, size, emulation_result = self.result
+	def command_words(self):
+		""" Returns a command line which could be used to produce the same result, and components of a line of stats output """
 		style = self.style
-		emulate = self.emulate
-
+		if style is None:
+			style = ""
 		com_words = []
 		com_words.append(f"-c{self.max_custom}")
 		com_words.append(f"-f{self.max_full}")
@@ -1729,7 +1769,25 @@ class Divider:
 		if self.divide_by_0 is not None:
 			com_words.append("-0 d")
 
+		if self.skip_custom != 0:
+			com_words.append(f"-K {self.skip_custom}")
+
 		command = " ".join(com_words)
+		return command, cwith, fwith, iwith, style, uwith, hwith, twith, swith
+
+	def add_line(self, stat):
+		""" Add a line of results to stats output lists """
+		_, _, _, _, mean, mean64, mean16, median, worst, emean, emean64, emean16, emedian, eworst, size, emulation_result = self.result
+		emulate = self.emulate
+
+		command, cwith, fwith, iwith, _, uwith, hwith, twith, swith = self.command_words()
+
+		line = f"|{self.max_custom:6}|{self.max_full:6}|{self.skip_custom:6}|{fwith:6}|{iwith:6}|{uwith:6}|{hwith:6}|{cwith:6}|" + \
+				f"{self.max_shifting_divider:6}|{twith:6}|{swith:6}|{size:6}|{command.ljust(MAX_COMMAND)}|"
+		bad = False
+		if self.with_stats is True:
+			line = f"{line[:-(1+MAX_COMMAND)]}{float(mean):7.5}|{float(mean64):7.5}|{float(mean16):7.5}|" + \
+					f"{median:6}|{float(worst):7.5}|{command.ljust(MAX_COMMAND)}|"
 
 		emtext = ""
 		trace=None
@@ -1748,14 +1806,6 @@ class Divider:
 					else:
 						emtext=f"{divisor}!{dividend}"
 
-		line = f"|{self.max_custom:6}|{self.max_full:6}|{fwith:6}|{iwith:6}|{uwith:6}|{hwith:6}|{cwith:6}|" + \
-				f"{self.max_shifting_divider:6}|{twith:6}|{swith:6}|{size:6}|{command.ljust(MAX_COMMAND)}|"
-		bad = False
-		if self.with_stats is True:
-			line = f"{line[:-(1+MAX_COMMAND)]}{float(mean):7.5}|{float(mean64):7.5}|{float(mean16):7.5}|" + \
-					f"{median:6}|{float(worst):7.5}|{command.ljust(MAX_COMMAND)}|"
-
-		if self.emulate is True:
 			bad = True
 			if emtext == "":
 				emtext = f"{float(emean):7.5}"
@@ -1784,9 +1834,10 @@ class Divider:
 		return trace
 
 def add_title(name, slist, args):
-	dbar=    "+============================================================================+"
-	title1 = "|Max   |Max   |With  |With  |Unroll|Hi Bit|Choice|Max   |Half  |Self  |Size  |"
-	title2 = "|Custom|Full  |Factor|Inline|Subtrc|Check |Tree  |Shift |Table |Modify|bytes |"
+	""" Add a title block to the output """
+	dbar=    "+===================================================================================+"
+	title1 = "|Max   |Max   |Skip  |With  |With  |Unroll|Hi Bit|Choice|Max   |Half  |Self  |Size  |"
+	title2 = "|Custom|Full  |Custom|Factor|Inline|Subtrc|Check |Tree  |Shift |Table |Modify|bytes |"
 	if args.stats:
 		dbar=  dbar[:-1] + "=======================================+"
 		title1 = title1  + "Estimat|Mea<=64|Mea<=16|Median|Worst  |"
@@ -1808,12 +1859,12 @@ def add_title(name, slist, args):
 
 # Sort the list of lines, and output the first of each length
 def best_time(lines):
+	""" Sort the list of lines, and output the first of each length """
 	out = []
 	lines.sort()
 	besti = 1000000
 	for maxsize in range(0, 1000):
-		for sizelinei in range(0,len(lines)):
-			sizeline = lines[sizelinei]
+		for sizelinei, sizeline in enumerate(lines):
 			_, _, _, _, _, size, line = sizeline
 			if size == maxsize:
 				if sizelinei < besti:
@@ -1823,15 +1874,14 @@ def best_time(lines):
 	return out
 
 # Blended score
-# This is the average index into all 5 lists (which should already be sorted)
+# This is the average index into all 5 lists (which must already be sorted)
 def blended_best_time(lists, weights):
+	""" Calculate the weighted average of indices into all 5 lists (which must already be sorted) """
 	index = {}
 	for item in lists[0]:
 		index[item[6]] = []
-	for listi in range(len(lists)):
-		l = lists[listi]
-		for itemi in range(len(l)):
-			item = l[itemi]
+	for listi, l in enumerate(lists):
+		for itemi, item in enumerate(l):
 			index[item[6]].append((item[5], itemi * weights[listi]))
 	indexl = []
 	for k, v in index.items():
@@ -1846,11 +1896,11 @@ def blended_best_time(lists, weights):
 # Load, repeatedly call it and verify correctness and time taken.
 def run_emulator(filename, size, tracy=False, numin=0, denomin=0, denominator_from="memory", numerator_from="memory",
 	result_to="a", fast_stats=False, random_stats=0):
+	""" Run the emulator on the given file and size. """
 	from py65emu.cpu import CPU
 	from py65emu.mmu import MMU, ReadOnlyError
 
-	global FULL_CASES
-	global FAST_CASES
+	global FULL_CASES, FAST_CASES
 
 	trace = None
 	if tracy is True:
@@ -2052,6 +2102,7 @@ def run_emulator(filename, size, tracy=False, numin=0, denomin=0, denominator_fr
 
 
 def single(args):
+	""" Generate a single divider routine """
 	divi = Divider(args)
 	if args.known_denominator is not None:
 		_, string, m256, m64, m16, median, worst, size = divi.make_constant_divider(args.known_denominator)
@@ -2065,7 +2116,7 @@ def single(args):
 		print(p, file=sys.stderr)
 	if args.assemble is True:
 		result = divi.do_make_divide().result
-		asmresult, asmout, _, _, _, _, _, _, _, _, _, _, _, _, _, emulation_result = result
+		_, asmout, _, _, _, _, _, _, _, _, _, _, _, _, _, emulation_result = result
 		if args.emulate is True:
 			if isinstance(emulation_result, tuple):
 				if isinstance(emulation_result[3], tuple):
@@ -2085,98 +2136,117 @@ def single(args):
 	else:
 		args.output.write(string)
 
-def main():
+def build_format(parser):
+	""" Formatting """
+	format_group = parser.add_argument_group("Formatting", \
+		"Formatting parameters, for compatibility with different assemblers. The defaults are for ACME.")
+	format_group.add_argument('-C', '--comment', default=';', help='prefix to comments (e.g. "#")')
+	format_group.add_argument('-e', '--equb', default="!byte", help="prefix to assemble a literal byte")
+	format_group.add_argument('-i', '--instruction', default='\t', help='prefix to instructions (e.g. \\t)')
+	format_group.add_argument('-l', '--label', default='', help='prefix to labels (e.g. ".")')
+	format_group.add_argument('-p', '--prefix', default='divide_', help='prefix to labels and calls (e.g. "divi_")')
+
+def build_env(parser):
+	""" Environment """
+	env_group = parser.add_argument_group("Environment", "Parameters controlling the calling convention.")
+	env_group.add_argument('-0', '--divide-by-zero', help="set the external divide by zero handler.")
+	env_group.add_argument('-9', '--error-vector', action='store_true',
+		help="if set, the division by zero handler is a vector (pointer to call indirectly), not a target to call directly.")
+	env_group.add_argument('-D', '--denominator-from', default="x",
+		help="take the denominator from this reg ('x', 'y' or 'a'), or 'memory' (the 'denominator' location).")
+	env_group.add_argument('-d', '--denominator', default="muldiv_temp_u",
+		help="label of the zero page location containing the denominator")
+	env_group.add_argument('-N', '--numerator-from', default="memory",
+		help="take the numerator from this reg ('x', 'y' or 'a'), or 'memory' (the 'denominator' location).")
+	env_group.add_argument('-n', '--numerator', default="muldiv_temp_t",
+		help="label of the zero page location containing the numerator")
+	env_group.add_argument('-W', '--result-to', default="a",
+		help="return the result in this reg ('x', 'y' or 'a'), or 'denominator' or 'numerator' to put it in memory.")
+
+def build_single(parser):
+	""" Parameters for producing a single instance """
+	single_group = parser.add_argument_group("Parameters", \
+		"Parameters defining a single divider routine, or the subset of routines which a test will consider.")
+	single_group.add_argument('-6', '--with-65c02', action="store_true", help="generate code for the 65c02. This cannot be emulated.")
+	single_group.add_argument('-B',	'--high-bit', action='store_true',
+		help="test the high bit of the denominator: over 128 the result is either 0 or 1, which is fast to test.")
+	single_group.add_argument('-~B','--no-high-bit', action='store_true')
+	single_group.add_argument('-c', '--max-custom', type=int, default=None,
+		help="maximum denominator to use a custom routine (higher is faster but larger)")
+	single_group.add_argument('-F', '--factoring', action='store_true', help="use factoring (faster for a few cases, but bigger)")
+	single_group.add_argument('-~F','--no-factoring', action='store_true')
+	single_group.add_argument('-f', '--max-full', type=int, default=None,
+		help="maximum denominator to use a custom routine that is not just a prefix to another")
+	single_group.add_argument('-H', '--half-table', action="store_true",
+		help="use a half-width (8, not 16 bit) table. Faster and smaller, but is sensitive to alignment")
+	single_group.add_argument('-~H','--no-half-table', action='store_true')
+	single_group.add_argument('-I', '--inlining', action='store_true', help="use inlining (less space, but slower)")
+	single_group.add_argument('-~I','--no-inlining', action='store_true')
+	single_group.add_argument('-K', '--skip-custom', type=int, default=0, help="avoid producing a routine for this denominator")
+	single_group.add_argument('-k',	'--known-denominator', type=int, help="produce code to divide by a known constant denominator")
+	single_group.add_argument('-M', '--self-modifying', action="store_true",
+		help="use self modifying code. Faster and smaller, but won't run from ROM")
+	single_group.add_argument('-~M','--no-self-modifying', action='store_true')
+	single_group.add_argument('-S', '--max-shifting', type=int, default=0,
+		help="maximum denominator to use the shifting divider as a fallback when over max-custom. 0 = never use it, 256=always.")
+	single_group.add_argument('-T', '--choice-tree', action='store_true',
+		help="use a choice tree if possible (faster and usually smaller, for low --max-custom)")
+	single_group.add_argument('-~T','--no-choice-tree', action='store_true')
+	single_group.add_argument('-u', '--unroll', action='store_true', help="unroll the subtraction loop (bigger, faster)")
+	single_group.add_argument('-~u','--no-unroll', action='store_true')
+	single_group.add_argument('-V',	'--early-high-bit', action='store_true',
+		help="do that test before checking whether it's in the table - faster if high bit set values are common.")
+	single_group.add_argument('-~V','--no-early-high-bit', action='store_true')
+
+def build_test(parser):
+	""" Test / Stats (multiple run) modes """
+	test_group = parser.add_argument_group("Test modes", \
+		"Test modes: run multiple cases to check correctness and obtain comparative stats.")
+	test_group.add_argument('-1', '--one-error', action="store_true", help="when testing, exit at the first error")
+	test_group.add_argument('-A', '--report', help="generate a report of errors to this file")
+	test_group.add_argument('-a', '--assemble', action="store_true",
+		help="when testing, run the ACME assembler to test correctness of each output")
+	test_group.add_argument('-E', '--emulate', action="store_true",
+		help="when testing, run a 6502 emulator to check correctness and time taken (this makes the test much slower)")
+	test_group.add_argument('-m', '--mix', nargs=5, type=float,
+		help="takes 5 floats: <mean 16> <mean 64> <mean> <median> <worst>, setting the weights used in the mixed table")
+	test_group.add_argument('-O', '--old-file', default=None, help="read an old output file and regenerate stats from it")
+	test_group.add_argument('-Q', '--quickest', action="store_true", help="when testing, run a much smaller set of cases")
+	test_group.add_argument('-q', '--quick', action="store_true",
+		help="when testing, run a smaller set of cases")
+	test_group.add_argument('-R', '--random-seed', type=int, default=0,
+		help="when testing with --random, use a repeatable set of cases generated from this number")
+	test_group.add_argument('-r', '--random', type=int, help="when testing, run this many randomly generated test cases")
+	test_group.add_argument('-s', '--stats', action="store_true", help="generate statistics (this makes the test slower)")
+	test_group.add_argument('-t', '--test', action="store_true",
+		help="produce all possibilities, save stats and a TOML description")
+	test_group.add_argument('-v', '--verbose', action="store_true",
+		help="when testing, include all (not just failing) cases in the report")
+	test_group.add_argument('-X', '--fast-stats', action="store_true",
+		help="generate estimated or emulated statistics from a limited set of numerator/denominators (faster, less accurate)")
+	test_group.add_argument('-Y', '--random-stats', type=int, default=0,
+		help="generate estimated or emulated statistics from randomized numerator/denominators (faster, less accurate)")
+
+def build_parser():
+	""" build an argparser parser """
 	parser = argparse.ArgumentParser(
 			prog='makedivide',
 			description='A parameterizable division routine builder for 6502',
 			epilog="Examples: TODO")
 
 	parser.add_argument('-o', '--output', default=sys.stdout, help="file to output to (stats from a test mode, otherwise code)")
+	parser.add_argument('-P', '--no-progress', help="disable the progress bar")
 
-	# Formatting
-	format_group = parser.add_argument_group("Formatting", \
-		"Formatting parameters, for compatibility with different assemblers. The defaults are for ACME.")
-	format_group.add_argument('-e', '--equb', default="!byte", help="prefix to assemble a literal byte")
-	format_group.add_argument('-i', '--instruction', default='\t', help='prefix to instructions (e.g. \\t)')
-	format_group.add_argument('-l', '--label', default='', help='prefix to labels (e.g. ".")')
-	format_group.add_argument('-C', '--comment', default=';', help='prefix to comments (e.g. "#")')
-	format_group.add_argument('-p', '--prefix', default='divide_', help='prefix to labels and calls (e.g. "divi_")')
+	build_format(parser)
+	build_env(parser)
+	build_single(parser)
+	build_test(parser)
 
-	# Environment
-	env_group = parser.add_argument_group("Environment", "Parameters controlling the calling convention.")
-	env_group.add_argument('-n', '--numerator', default="muldiv_temp_t",
-		help="label of the zero page location containing the numerator")
-	env_group.add_argument('-d', '--denominator', default="muldiv_temp_u",
-		help="label of the zero page location containing the denominator")
-	env_group.add_argument('-D', '--denominator-from', default="x",
-		help="take the denominator from this reg ('x', 'y' or 'a'), or 'memory' (the 'denominator' location).")
-	env_group.add_argument('-N', '--numerator-from', default="memory",
-		help="take the numerator from this reg ('x', 'y' or 'a'), or 'memory' (the 'denominator' location).")
-	env_group.add_argument('-W', '--result-to', default="a",
-		help="return the result in this reg ('x', 'y' or 'a'), or 'denominator' or 'numerator' to put it in memory.")
-	env_group.add_argument('-0', '--divide-by-zero', help="set the external divide by zero handler.")
-	env_group.add_argument('-9', '--error-vector', action='store_true',
-		help="if set, the division by zero handler is a vector (pointer to call indirectly), not a target to call directly.")
+	return parser
 
-	# Parameters for producing a single instance
-	single_group = parser.add_argument_group("Parameters", \
-		"Parameters defining a single divider routine, or the subset of routines which a test will consider.")
-	single_group.add_argument('-c', '--max-custom', type=int, default=None,
-		help="maximum denominator to use a custom routine (higher is faster but larger)")
-	single_group.add_argument('-f', '--max-full', type=int, default=None,
-		help="maximum denominator to use a custom routine that is not just a prefix to another")
-	single_group.add_argument('-I', '--inlining', action='store_true', help="use inlining (less space, but slower)")
-	single_group.add_argument('-~I','--no-inlining', action='store_true')
-	single_group.add_argument('-F', '--factoring', action='store_true', help="use factoring (faster for a few cases, but bigger)")
-	single_group.add_argument('-~F','--no-factoring', action='store_true')
-	single_group.add_argument('-T', '--choice-tree', action='store_true',
-		help="use a choice tree if possible (faster and usually smaller, for low --max-custom)")
-	single_group.add_argument('-~T','--no-choice-tree', action='store_true')
-	single_group.add_argument('-S', '--max-shifting', type=int, default=0,
-		help="maximum denominator to use the shifting divider as a fallback when over max-custom. 0 = never use it, 256=always.")
-	single_group.add_argument('-H', '--half-table', action="store_true",
-		help="use a half-width (8, not 16 bit) table. Faster and smaller, but is sensitive to alignment")
-	single_group.add_argument('-~H','--no-half-table', action='store_true')
-	single_group.add_argument('-M', '--self-modifying', action="store_true",
-		help="use self modifying code. Faster and smaller, but won't run from ROM")
-	single_group.add_argument('-~M','--no-self-modifying', action='store_true')
-	single_group.add_argument('-u', '--unroll', action='store_true', help="unroll the subtraction loop (bigger, faster)")
-	single_group.add_argument('-~u','--no-unroll', action='store_true')
-	single_group.add_argument('-B',	'--high-bit', action='store_true',
-		help="test the high bit of the denominator: over 128 the result is either 0 or 1, which is fast to test.")
-	single_group.add_argument('-~B','--no-high-bit', action='store_true')
-	single_group.add_argument('-V',	'--early-high-bit', action='store_true',
-		help="do that test before checking whether it's in the table - faster if high bit set values are common.")
-	single_group.add_argument('-~V','--no-early-high-bit', action='store_true')
-	single_group.add_argument('-k',	'--known-denominator', type=int, help="produce code to divide by a known constant denominator")
-	single_group.add_argument('-6', '--with-65c02', action="store_true", help="generate code for the 65c02. This cannot be emulated.")
-
-	# Test / Stats (multiple run) modes
-	test_group = parser.add_argument_group("Test modes", \
-		"Test modes: run multiple cases to check correctness and obtain comparative stats.")
-	test_group.add_argument('-t', '--test', action="store_true",
-		help="produce all possibilities, save stats and a TOML description")
-	test_group.add_argument('-s', '--stats', action="store_true", help="generate statistics (this makes the test slower)")
-	test_group.add_argument('-X', '--fast-stats', action="store_true",
-		help="generate estimated or emulated statistics from a limited set of numerator/denominators (faster, less accurate)")
-	test_group.add_argument('-Y', '--random-stats', type=int, default=0,
-		help="generate estimated or emulated statistics from randomized numerator/denominators (faster, less accurate)")
-	test_group.add_argument('-a', '--assemble', action="store_true",
-		help="when testing, run the ACME assembler to test correctness of each output")
-	test_group.add_argument('-q', '--quick', action="store_true",
-		help="when testing, run a smaller set of cases")
-	test_group.add_argument('-Q', '--quickest', action="store_true", help="when testing, run a much smaller set of cases")
-	test_group.add_argument('-v', '--verbose', action="store_true",
-		help="when testing, include all (not just failing) cases in the report")
-	test_group.add_argument('-E', '--emulate', action="store_true",
-		help="when testing, run a 6502 emulator to check correctness and time taken (this makes the test much slower)")
-	test_group.add_argument('-r', '--random', type=int, help="when testing, run this many randomly generated test cases")
-	test_group.add_argument('-R', '--random-seed', type=int,
-		help="when testing with --random, use a repeatable set of cases generated from this number")
-	test_group.add_argument('-1', '--one-error', action="store_true", help="when testing, exit at the first error")
-	test_group.add_argument('-A', '--report', help="generate a report of errors to this file")
-	test_group.add_argument('-m', '--mix', nargs=5, type=float,
-		help="takes 5 floats: <mean 16> <mean 64> <mean> <median> <worst>, setting the weights used in the mixed table")
+def main():
+	""" Main command line entry. Parse, check consistency, and run. """
+	parser = build_parser()
 
 	args = parser.parse_args()
 
@@ -2184,11 +2254,19 @@ def main():
 		args.emulate = False
 		print("Warning: the emulator supports 6502 only, not 65c02. Emulation has been disabled.")
 
-	if args.max_custom is None:
+	if args.skip_custom is not None and args.max_custom is not None and args.skip_custom > args.max_custom:
+		print("Turning off --skip-custom, as it must be <= max custom")
+		args.skip_custom = 0
+
+	if args.skip_custom is not None and args.choice_tree is True:
+		print("Turning off --skip-custom, as it is incompatible with --choice-tree")
+		args.skip_custom = 0
+
+	if args.max_custom is None and args.test is False:
 		print("Using default max_custom (18)")
 		args.max_custom = 18
 
-	if args.max_custom is not None and args.max_full is None:
+	if args.max_custom is not None and args.max_full is None and args.test is False:
 		print("Assuming max_full = max_custom")
 		args.max_full = args.max_custom
 
@@ -2197,13 +2275,16 @@ def main():
 		args.assemble = True
 
 	# Seed the RNG if it's going to be used
-	if args.random is True or args.random_stats is True:
-		if args.random_seed is None:
+	if (args.random is not None and args.random > 0) or (args.random_stats is not None and args.random_stats > 0):
+		if args.random_seed == 0:
 			seed = time.time_ns()
 			print(f"Using random seed {seed}", file=sys.stderr)
 		else:
 			seed = args.random_seed
 		random.seed(seed)
+
+	if args.random is None and args.random_stats is None and args.random_seed != 0:
+		print("Random seed was given, without either --random or --random-stats: this will have no effect by itself")
 
 	if args.early_high_bit is True:
 		args.high_bit = True
@@ -2215,13 +2296,16 @@ def main():
 	if args.mix is None:
 		args.mix = (1, 1, 1, 1, 1)
 
-	if args.test is True:
+	if args.old_file is not None:
+		test_from_old(args)
+	elif args.test is True:
 		test(args)
 	else:
 		single(args)
 
 # True if the given parameters match command line limits on test modes
 def args_are_ok(args, factoring, inlining, choice_tree, half_table, self_modifying, unroll, high_bit, early_high_bit):
+	""" True if the given parameters match command line limits on test modes """
 	if (early_high_bit is False and args.early_high_bit is True) or (early_high_bit is True and args.no_early_high_bit is True):
 		return False
 	if (high_bit is False and args.high_bit is True) or (high_bit is True and args.no_high_bit is True):
@@ -2242,6 +2326,7 @@ def args_are_ok(args, factoring, inlining, choice_tree, half_table, self_modifyi
 	return True
 
 def test_random_futures(args, executor):
+	""" Random testing: generate parameters at random and run test cases, returning futures """
 	futures = []
 	i_max = 64
 	j_max = 64
@@ -2255,12 +2340,11 @@ def test_random_futures(args, executor):
 	early_high_bit_max = 2
 
 	shift_cases_max = 66
-	sample_max = i_max * j_max * factoring_max * inlining_max * choice_tree_max * use_smc_max
-	sample_max *= half_table_max * shift_cases_max * high_bit_max * early_high_bit_max
+	sample_max = i_max * j_max * shift_cases_max * factoring_max * inlining_max * choice_tree_max * use_smc_max
+	sample_max *= half_table_max * high_bit_max * early_high_bit_max * j_max
 	print(f"Taking {args.random} samples randomly from {sample_max} possibilities", file=sys.stderr)
 
 	poss = int(args.random * 1.2)
-	rnl = random.sample(range(sample_max), poss)
 	pargsl = []
 	while len(pargsl) < args.random:
 		print(f"Trying {poss} possibilities...", file=sys.stderr)
@@ -2275,10 +2359,12 @@ def test_random_futures(args, executor):
 			sample //= i_max
 			j = sample % j_max
 			sample //= j_max
+			if i < j:
+				i, j = j, i
 			max_shifting_divider = sample % shift_cases_max
 			if max_shifting_divider == shift_cases_max-1:
 				max_shifting_divider = 256
-			sample //= j_max
+			sample //= shift_cases_max
 			factoring = (sample % factoring_max) == 0
 			sample //= factoring_max
 			inlining = (sample % inlining_max) == 0
@@ -2294,12 +2380,16 @@ def test_random_futures(args, executor):
 			high_bit = (sample % high_bit_max) == 0
 			sample //= high_bit_max
 			early_high_bit = (sample % early_high_bit_max) == 0
-			#sample //= early_high_bit_max
+			sample //= early_high_bit_max
+			skip_custom = 0
+			if j > 1:
+				skip_custom = sample % j
+
 			if args_are_ok(args, factoring, inlining, choice_tree, half_table, use_smc, unrolled, high_bit, early_high_bit):
 				divi = Divider(args, max_custom=i, max_full=j, prefix="", use_factoring=factoring, inlining=inlining, style="", \
 										use_choice_tree=choice_tree, max_shifting_divider=max_shifting_divider, half_table=half_table, \
 										use_smc=use_smc, fallback_unrolled_subtraction=unrolled, \
-										high_bit_check=high_bit, early_high_bit=early_high_bit, first=False)
+										high_bit_check=high_bit, early_high_bit=early_high_bit, skip_custom=skip_custom, first=False)
 				if divi.try_make_divide() is True:
 					pargsl.append(divi)
 		if len(pargsl) < args.random:
@@ -2313,16 +2403,16 @@ def test_random_futures(args, executor):
 	for pargs in pargsl:
 		futures.append(executor.submit(pargs.do_make_divide))
 
-	return (len(pargsl), futures)
+	return futures
 
 def test_futures(args, executor):
+	""" With all possible combinations of args, run test cases and return a list of futures """
 	if args.random is not None:
 		return test_random_futures(args, executor)
-	futures = []
 
-	max_cases = list(CUSTOMS)
-	shift_cases = (0, 4, 8, 12, 16, 24, 32, 48, 64, 256)
+	futures, max_cases, shift_cases = [], list(CUSTOMS), (0, 4, 8, 12, 16, 24, 32, 48, 64, 256)
 	hs_table = ( (False, True), (False, False), (True, False), (True, True) )
+	skips = (0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28)
 	if args.quick is True:
 		max_cases = (
 			0, 1, 2, 3, 4,
@@ -2331,6 +2421,7 @@ def test_futures(args, executor):
 			34, 40, 52, 64
 			)
 		shift_cases = (0, 4, 12, 48, 256)
+		skips = (0, 1, 2, 4, 6, 8)
 		hs_table = ( (True, False), (True, True) )
 		if args.quickest is True:
 			shift_cases = (0, 12, 256)
@@ -2339,8 +2430,10 @@ def test_futures(args, executor):
 				6, 8, 10, 12,
 				15, 18, 23, 64
 				)
+			skips = (0, 4)
 			hs_table = ( (True, True), )
 	full_cases = max_cases
+
 	# Over 15: ignore factoring, allow inlining, ignore choice
 	# 7 to 15: allow factoring, allow inlining, ignore choice
 	# 5 to 7:  allow factoring, ignore inlining, ignore choice
@@ -2353,7 +2446,8 @@ def test_futures(args, executor):
 	tags = (	(False, False, False, "_rn"), (True, False, False, "_rl",), (True, True, False, "_re"),
 				(False, False, True, "_un"), (True, False, True, "_ul",), (True, True, True, "_ue") )
 
-	for i in max_cases:
+	def test_one_future(args, i):
+		""" Run one of the list of futures """
 		offset_cases = []
 		for m in shift_cases:
 			if m not in {0,256}:
@@ -2372,127 +2466,45 @@ def test_futures(args, executor):
 				for factoring, inlining, choice_tree in fic_table:
 					if (j != i) and ((args.quickest is True) or (choice_tree is True)):
 						continue
-					for half_table, use_smc in hs_table:
-						for max_shifting_divider in offset_cases:
-							first = True
-							for high_bit, early_high_bit, unrolled, _ in tags:
-								if args_are_ok(args, factoring, inlining, choice_tree, half_table, use_smc, unrolled, high_bit, early_high_bit):
-									divi = Divider(args, max_custom=i, max_full=j, prefix="", use_factoring=factoring, inlining=inlining, style="", \
-										use_choice_tree=choice_tree, max_shifting_divider=max_shifting_divider, half_table=half_table, \
-										use_smc=use_smc, fallback_unrolled_subtraction=unrolled, \
-										high_bit_check=high_bit, early_high_bit=early_high_bit, first=first)
-									if divi.try_make_divide() is True:
-										futures.append(executor.submit(divi.do_make_divide))
-										first = False
+					for k in skips:
+						if k == 0:
+							skip_custom = 0
+						else:
+							if choice_tree is True or inlining is False:
+								continue
+							skip_custom = j-k
+							if skip_custom <= 2:
+								continue
+						for half_table, use_smc in hs_table:
+							for max_shifting_divider in offset_cases:
+								first = True
+								for high_bit, early_high_bit, unrolled, _ in tags:
+									if args_are_ok(args, factoring, inlining, choice_tree, half_table, use_smc, unrolled, high_bit, early_high_bit):
+										divi = Divider(args, max_custom=i, max_full=j, prefix="", use_factoring=factoring, inlining=inlining, style="", \
+											use_choice_tree=choice_tree, max_shifting_divider=max_shifting_divider, half_table=half_table, \
+											use_smc=use_smc, fallback_unrolled_subtraction=unrolled, \
+											high_bit_check=high_bit, early_high_bit=early_high_bit, skip_custom=skip_custom, first=first)
+										if divi.try_make_divide() is True:
+											futures.append(executor.submit(divi.do_make_divide))
+											first = False
 			else:
 				break
 
+	for i in max_cases:
+		test_one_future(args, i)
+
 	return futures
 
-def do_test(args, futures, executor):
-	cases = len(futures)
-	sbar = "+------" * 11
-	if args.stats:
-		sbar = f"{sbar}+-------+-------+-------+------+-------"
-	if args.emulate:
-		sbar = f"{sbar}+-------+-------+-------+------+-------"
-	sbar = f"{sbar}+{'-' * MAX_COMMAND}"
-	asmoutname = args.report
-	sbar = sbar + "+"
-	stat_lists = {}
-	for name in (	"full",
-					"mean", "mean64", "mean16", "median", "worst", "mix",
-					"emean", "emean64", "emean16", "emedian", "eworst", "emix"):
-		stat_lists[name] = []
+def write_stats(args, out):
+	""" Join and write to output """
+	if isinstance(args.output, str):
+		with open(args.output, "w", encoding="utf-8") as file:
+			print("\n".join(out), file=file)
+	else:
+		print("\n".join(out), file=args.output)
 
-	print(f"Running {cases} test cases...", file=sys.stderr)
-
-
-	# Run them all
-	emulation_results = {}
-	asmout = []
-	errors = 0
-	badparams = 0
-	emu_errors = 0
-	emu_traces = 0
-	success = 0
-
-	for future in futures:
-		returned = future.result()
-		result, binary, avail, _, _, _, _, _, _, _, _, _, _, _, _, emulation_result = returned.result
-
-		factoring = returned.use_factoring
-		inlining = returned.inlining
-		choice_tree = returned.use_choice_tree
-		max_shifting_divider = returned.max_shifting_divider
-		unrolled = returned.fallback_unrolled_subtraction
-
-		if avail:
-			if returned.first:
-				stat_lists["full"].append(sbar)
-			returned.add_line(stat_lists)
-
-		error = (binary is None or result is None or "Error" in result)
-		if error is True:
-			errors += 1
-		badparam = result and NOT_POSS in result
-		if badparam is True:
-			badparams += 1
-		if error is False and badparam is False:
-			success += 1
-		emu_trace = None
-		if emulation_result is not None:
-			if isinstance(emulation_result, str):
-				emu_errors += 1
-			else:
-				mismatch, divisor, _, _, trace = emulation_result
-				if mismatch is True or divisor != -1:
-					emu_errors += 1
-					if trace is not None:
-						emu_traces += 1
-						emu_trace = str(trace)
-		eib = (emulation_result is not None and isinstance(emulation_result, str) and badparam is not True)
-		if args.verbose or error is True or emu_trace is not None or eib:
-			asmout.append(f"Results for max_custom {returned.max_custom}, max_full {returned.max_full}, factoring {factoring}, " + \
-							f"inlining {inlining}, unrolled {unrolled}, choice {choice_tree}, max_shifting {max_shifting_divider}:")
-			if result is None:
-				asmout.append("(no result)")
-			else:
-				asmout.append(str(result))
-			if isinstance(emulation_result, str):
-				if emulation_result not in emulation_results:
-					emulation_results[emulation_result] = 0
-				emulation_results[emulation_result] += 1
-			if (emulation_result is not None and isinstance(emulation_result, str) and badparam is not True):
-				asmout.append(f"Emulation error: {emulation_result}")
-			if emu_trace is not None:
-				asmout.append("Trace follows:")
-				asmout.append(")\n".join(emu_trace.split("),")))
-				asmout.append("")
-			if binary is None:
-				asmout.append("(no binary output)")
-			else:
-				asmout.append(str(binary))
-			asmout.append("")
-		if args.one_error and (error is True or emu_trace is not None or eib):
-			print(f"Error, exiting after {success} successful cases...", file=sys.stderr)
-			executor.shutdown(cancel_futures=True, wait=True)
-			break
-	stat_lists["full"].append(sbar)
-
-	if asmoutname is not None:
-		with open(asmoutname, "w", encoding="utf-8") as file:
-			header = f"Ran {errors+success} test cases, {errors} errors, {success} successfully assembled.\n"
-			if args.emulate:
-				header = header[:-2] + f", {emu_errors - badparams} emulation errors, {badparams} bad parameters, {emu_traces} with trace.\n"
-				if len(emulation_results) > 0:
-					header = f"{header}Emulation errors reported: {emulation_results}"
-			file.write(header)
-			for entry in asmout:
-				file.write("\n")
-				file.write(entry)
-			file.write("\n")
-
+def print_stats(args, stat_lists):
+	""" Calculate and print stats (best per size, for different measures of merit) """
 	# Add stats
 	out = []
 	est=""
@@ -2541,14 +2553,208 @@ def do_test(args, futures, executor):
 	if args.random is not None:
 		stat_lists["full"].sort()
 	out.extend(stat_lists["full"])
-	if isinstance(args.output, str):
-		with open(args.output, "w", encoding="utf-8") as file:
-			print("\n".join(out), file=file)
-	else:
-		print("\n".join(out), file=args.output)
+	write_stats(args, out)
+	print("Statistics complete.", file=sys.stderr)
+
+def new_stat_lines():
+	""" Return an empty stats structure (dict of lists) """
+	stat_lists = {}
+	for name in (	"full",
+					"mean", "mean64", "mean16", "median", "worst", "mix",
+					"emean", "emean64", "emean16", "emedian", "eworst", "emix"):
+		stat_lists[name] = []
+	return stat_lists
+
+def do_test(args, futures, executor):
+	""" Run a list of futures, report errors and stats """
+
+	errors = 0
+	badparams = 0
+	emu_errors = 0
+	emu_traces = 0
+	success = 0
+
+	cases = len(futures)
+	sbar = "+------" * 12
+	if args.stats:
+		sbar = f"{sbar}+-------+-------+-------+------+-------"
+	if args.emulate:
+		sbar = f"{sbar}+-------+-------+-------+------+-------"
+	sbar = f"{sbar}+{'-' * MAX_COMMAND}"
+
+	sbar = sbar + "+"
+	stat_lists = new_stat_lines()
+
+	# Run them all
+	emulation_results = {}
+	asmout = []
+
+	def do_one_test(args, returned):
+		""" Run one of a list of futures """
+		nonlocal errors, badparams, emu_errors, emu_traces, success, sbar, asmout, stat_lists
+		result, binary, avail, _, _, _, _, _, _, _, _, _, _, _, _, emulation_result = returned.result
+
+		factoring = returned.use_factoring
+		inlining = returned.inlining
+		choice_tree = returned.use_choice_tree
+		max_shifting_divider = returned.max_shifting_divider
+		unrolled = returned.fallback_unrolled_subtraction
+
+		if avail:
+			if returned.first:
+				stat_lists["full"].append(sbar)
+			returned.add_line(stat_lists)
+
+		error = (binary is None or result is None or "Error" in result)
+		if error is True:
+			errors += 1
+		badparam = result and NOT_POSS in result
+		if badparam is True:
+			badparams += 1
+		if error is False and badparam is False:
+			success += 1
+		emu_trace = None
+		if emulation_result is not None:
+			if isinstance(emulation_result, str):
+				emu_errors += 1
+			else:
+				mismatch, divisor, _, _, trace = emulation_result
+				if mismatch is True or divisor != -1:
+					emu_errors += 1
+					if trace is not None:
+						emu_traces += 1
+						emu_trace = str(trace)
+		eib = (emulation_result is not None and isinstance(emulation_result, str) and badparam is not True)
+		if args.verbose or error is True or emu_trace is not None or eib:
+			asmout.append(f"Results for max_custom {returned.max_custom}, max_full {returned.max_full}, factoring {factoring}, " + \
+							f"inlining {inlining}, unrolled {unrolled}, choice {choice_tree}, max_shifting {max_shifting_divider}," + \
+							f" skip_custom {returned.skip_custom}:")
+			asmout.append(f"(equivalent to command: {returned.command_words()[0]})")
+			if result is None:
+				asmout.append("(no result)")
+			else:
+				asmout.append(str(result))
+			if isinstance(emulation_result, str):
+				if emulation_result not in emulation_results:
+					emulation_results[emulation_result] = 0
+				emulation_results[emulation_result] += 1
+			if (emulation_result is not None and isinstance(emulation_result, str) and badparam is not True):
+				asmout.append(f"Emulation error: {emulation_result}")
+			if emu_trace is not None:
+				asmout.append("Trace follows:")
+				asmout.append(")\n".join(emu_trace.split("),")))
+				asmout.append("")
+			if binary is None:
+				asmout.append("(no binary output)")
+			else:
+				asmout.append(str(binary))
+			asmout.append("")
+		if args.one_error and (error is True or emu_trace is not None or eib):
+			print(f"Error, exiting after {success} successful cases...", file=sys.stderr)
+			return False
+		return True
+
+	print(f"Running {cases} test cases...", file=sys.stderr)
+
+	tqdm_range = range(len(futures))
+	if has_tqdm is True and args.no_progress is False:
+		tqdm_range = tqdm.tqdm(range(len(futures)), delay=3, total=len(futures), miniters=1, smoothing=0.05)
+	for futurei in tqdm_range:
+		future = futures[futurei]
+		returned = future.result()
+		futures[futurei] = None
+		if do_one_test(args, returned) is False:
+			executor.shutdown(cancel_futures=True, wait=True)
+			break
+	stat_lists["full"].append(sbar)
+
+	print("All test cases complete.", file=sys.stderr)
+	if args.emulate is True or args.stats is True:
+		asmoutname = args.report
+		print("Computing statistics...", file=sys.stderr)
+		if asmoutname is not None:
+			with open(asmoutname, "w", encoding="utf-8") as file:
+				header = f"Ran {errors+success} test cases, {errors} errors, {success} successfully assembled.\n"
+				if args.emulate:
+					header = header[:-2] + f", {emu_errors - badparams} emulation errors, {badparams} bad parameters, {emu_traces} with trace.\n"
+					if len(emulation_results) > 0:
+						header = f"{header}Emulation errors reported: {emulation_results}"
+				file.write(header)
+				for entry in asmout:
+					file.write("\n")
+					file.write(entry)
+				file.write("\n")
+
+		print_stats(args, stat_lists)
+
+def test_from_old(args):
+	""" Parse old test output, use it to re-run statistics """
+	# Parse output. Skip lines until "All cases is found", then skip 4 more.
+	# Until the end of file, read lines, skipping ones starting with + and reading ones starting with |.
+	# |-lines are parsed by replacing | with space and reading space-delimited, converting to a Divider
+	#	and setting its result.
+	name = args.old_file
+	all_cases = False
+	print(f"Reading old results from {name}...", file=sys.stderr)
+
+	stat_lists = new_stat_lines()
+	with open(name, "r", encoding="utf-8") as filep:
+		file = filep.read()
+		lines = file.splitlines()
+		for line in lines:
+			if len(line) > 1 and line[:2] == '| ':
+				if all_cases is False:
+					if "All cases" in line:
+						all_cases = True
+				else:
+					words = line.split('|')
+					if len(words) != 25:
+						print(f"Bad line (wrong field count): {line}", file=sys.stderr)
+						return
+					words = words[1:-2] # strip leading and trailing '', and command line
+					stripped = []
+					# remove whitespace
+					for word in words:
+						stripped.append(word.strip())
+					conv = []
+					for s in stripped:
+						if len(s) < 1:
+							print(f"Bad line (empty field): {line}", file=sys.stderr)
+							return
+						if s == "Yes":
+							conv.append(True)
+						elif s == "No":
+							conv.append(False)
+						elif s == "Early":
+							conv.append((True, True))
+						elif s == "Late":
+							conv.append((True, False))
+						elif (s[0].isdigit() or s[0] == '-') and '.' in s:
+							conv.append(float(s))
+						elif (s[0].isdigit() or s[0] == '-'):
+							conv.append(int(s))
+						else:
+							conv.append(s)
+					if conv[6] is False:
+						check_high_bit=False
+						early_high_check=False
+					else:
+						check_high_bit, early_high_check=conv[6]
+					divi = Divider(args, max_custom=conv[0], max_full=conv[1], prefix="", style="", skip_custom=conv[2], use_factoring=conv[3], \
+						inlining=conv[4], fallback_unrolled_subtraction=conv[5], high_bit_check=check_high_bit, \
+						early_high_bit=early_high_check, use_choice_tree=conv[7], max_shifting_divider=conv[8], half_table=conv[9], \
+						use_smc=conv[10], first=False)
+
+					size, mean, mean64, mean16, median, worst, emean, emean64, emean16, emedian, eworst = conv[11:22]
+					divi.result = ("", "", True, "", mean, mean64, mean16, median, worst, emean, emean64, emean16, emedian, eworst, size, (False, -1, -1, (emean, emean64, emean16, emedian, eworst), None))
+					divi.add_line(stat_lists)
+
+	print_stats(args, stat_lists)
 
 def test(args):
-	# Set up futures for all possibilities
+	""" Set up futures for all possibilities, and run them """
+	# Try InterpreterPoolExecutor if it is available - it's faster.
+	# If not, fall back to the more widely available ProcessPoolExecutor.
 	if hasattr(concurrent.futures, "InterpreterPoolExecutor"):
 		with concurrent.futures.InterpreterPoolExecutor() as executor:
 			futures=test_futures(args, executor)
