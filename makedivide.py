@@ -2755,16 +2755,9 @@ def test_from_old(args):
 
 def test(args):
 	""" Set up futures for all possibilities, and run them """
-	# Try InterpreterPoolExecutor if it is available - it's faster.
-	# If not, fall back to the more widely available ProcessPoolExecutor.
-	if hasattr(concurrent.futures, "InterpreterPoolExecutor"):
-		with concurrent.futures.InterpreterPoolExecutor() as executor:
-			futures=test_futures(args, executor)
-			do_test(args, futures, executor)
-	else:
-		with concurrent.futures.ProcessPoolExecutor() as executor:
-			futures=test_futures(args, executor)
-			do_test(args, futures, executor)
+	with concurrent.futures.ProcessPoolExecutor() as executor:
+		futures=test_futures(args, executor)
+		do_test(args, futures, executor)
 
 if __name__ == '__main__':
 	main()
