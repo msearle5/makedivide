@@ -9,6 +9,8 @@
 name: Upload Python Package
 
 on:
+  workflow_dispatch:
+    types: [published]
   release:
     types: [published]
 
