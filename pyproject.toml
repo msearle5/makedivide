@@ -8,7 +8,7 @@ dynamic = ["version"]
 name = "makedivide"
 dependencies = [
   "tqdm",
-  "docmarionum1/py65emu"
+  "py65emu"
 ]
 authors = [
   {name = "Mike Searle", email = "msearle5@btinternet.com"},
