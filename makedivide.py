@@ -15,7 +15,8 @@
 # (it adds some size) which is for 9 (22-62 cycles saved) or 15 (4-17 cycles saved) only
 # (and their multiples of powers of two), when the custom routines for those denominators are
 # not used.
-# The routines also by default share trailing code, so to save space will branch between routines.
+# The routines also share trailing code, so by default )when not "inlining") will branch
+# between routines.to save space.
 #
 # For complete documentation, see the README.md:
 # 	https://github.com/msearle5/makedivide/blob/main/README.md
@@ -45,7 +46,7 @@ MAX_COMMAND = 40
 # Longer than any actual code, the timeout
 BAD_CYCLES = 4000
 
-REG_MEM_SOURCES = ( "x", "y", "a", "memory" )
+REG_MEM_SOURCES = { "x", "y", "a", "memory" }
 
 # Available constants to divide by
 CUSTOMS = {
@@ -301,9 +302,9 @@ class Divider:
 		return cycles
 
 
-	# Cycles needed to find the quotient by repeated subtraction averaged over all numerators
+	# Cycles needed to find the quotient by repeated subtraction, averaged over all numerators
 	def mean_cycles_by_subtraction(self, denominator):
-		""" Cycles needed to find the quotient by repeated subtraction averaged over all numerators """
+		""" Cycles needed to find the quotient by repeated subtraction, averaged over all numerators """
 		total = 0
 		for num in range(0,256):
 			total += self.cycles_by_subtraction(num, denominator)
@@ -422,7 +423,7 @@ class Divider:
 			else:
 				cycles += CHOICE_CYCLES[denominator]
 			# Custom?
-			if denominator in jumps:#CUSTOMS and (denominator in PRIMES or denominator <= self.max_full):
+			if denominator in jumps:
 				cc = self.cycles_by_custom(numerator, denominator, True)
 				if cc is None:
 					cycles += self.cycles_by_generic(numerator, denominator)
@@ -599,7 +600,6 @@ class Divider:
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}sta {numerator}")
 		if 9 in jumps:
-			#lsr; lsr; lsr; adc {numerator}; ror; adc {numerator}; ror; adc {numerator}; ror; lsr; lsr; lsr;
 			text.append(f"{label}{prefix}divide_by_9")
 			text.append(f"{insn}lsr")
 			text.append(f"{insn}lsr")
@@ -950,7 +950,6 @@ class Divider:
 	# Make a constant denominator divider.
 	# This uses a custom routine if available, otherwise a subtraction loop.
 	# This doesn't accept any variations and always goes from numerator A, return A
-	#
 	def make_constant_divider(self, denom):
 		""" Make a constant denominator divider. """
 		assert denom > 0
@@ -963,7 +962,7 @@ class Divider:
 		self.inlining = True
 		self.use_factoring = False
 		text = []
-		if denom in (0, 1, 2, 4, 8, 16, 17, 32, 34, 64, 68):
+		if denom in {0, 1, 2, 4, 8, 16, 17, 32, 34, 64, 68}:
 			text = self.make_powers_of_2(jumps, True, "divide_by_0")
 		else:
 			if denom <= 76:
@@ -1492,7 +1491,6 @@ class Divider:
 
 		else:
 			if self.half_table:
-				# Align text.append(f"!do while >( * + {len(jumpentries)} ) != >* {{ nop }}")
 				low, lb = ("low", "<")
 				text.append(f"{label}{prefix}{low}table")
 				for entry in jumpentries:
@@ -2181,7 +2179,7 @@ def main():
 
 	args = parser.parse_args()
 
-	if args.with_65c02 is True and args.emulate is True:
+	if args.with_65c02 is True and args.emulate is True and args.old_file is False:
 		args.emulate = False
 		print("Warning: the emulator supports 6502 only, not 65c02. Emulation has been disabled.")
 
@@ -2201,7 +2199,7 @@ def main():
 		print("Assuming max_full = max_custom")
 		args.max_full = args.max_custom
 
-	if args.assemble is False and args.emulate is True:
+	if args.assemble is False and args.emulate is True and args.old_file is False:
 		print("Using --assemble, as it is required for emulation")
 		args.assemble = True
 
@@ -2438,7 +2436,7 @@ def print_stats(args, stat_lists):
 	""" Calculate and print stats (best per size, for different measures of merit) """
 	# Add stats
 	out = []
-	est=""
+	est = ""
 	if args.emulate is True:
 		best_worst  	= best_time(stat_lists["eworst"])
 		best_median 	= best_time(stat_lists["emedian"])
@@ -2620,9 +2618,9 @@ def do_test(args, futures, executor):
 
 def test_from_old(args):
 	""" Parse old test output, use it to re-run statistics """
-	# Parse output. Skip lines until "All cases is found", then skip 4 more.
-	# Until the end of file, read lines, skipping ones starting with + and reading ones starting with |.
-	# |-lines are parsed by replacing | with space and reading space-delimited, converting to a Divider
+	# Parse output. Skip lines until "All cases is found".
+	# Until the end of file, read lines, reading only the ones starting with "| ".
+	# These lines are parsed by replacing | with space and reading space-delimited, converting to a Divider
 	#	and setting its result.
 	name = args.old_file
 	all_cases = False

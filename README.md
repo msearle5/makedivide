@@ -106,7 +106,7 @@ A routine to divide by a constant can be extracted with **--known-denominator**.
 
 When running a potentially slow multiple-parameter mode, a progress bar is displayed using [tqdm](https://github.com/tqdm/tqdm). This can be turned off with **--no-progress**.
 
-## Where the division routine are from
+## Where the division routines are from
 
 Most are from [this thread](https://forums.nesdev.org/viewtopic.php?f=2&t=11336), however I have also used a superoptimizer (**supero.c**, **supero-run** to run multiple copies of it with different conditions, **cycler.py** to annotate the results with speed, **supero-annotated.txt** the end result of this.)
 
