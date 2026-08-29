@@ -28,8 +28,8 @@ This will produce new-list.txt in the same format as the original full-list.txt.
 At the top of this file will be a list of entries, like this:
 
 `
-|         Parameters           |Size|  Simulated Statistics       | Emulated Statistics        | Command Line
-|5|0|0|No|No|No|No|No|0|Yes|Yes| 70 |45.895|71.268|109.94|34|370.0|47.716|73.427|112.6|36|372.0|-c5 -f0 -H -M
+|         Parameters  |Size|  Simulated Statistics  | Emulated Statistics    | Command Line
+|5|0|0|N|N|N|N|N|0|Y|Y| 70 |45.8|71.2|109.9|34|370.0|47.7|73.4|112.6|36|372.0|-c5 -f0 -H -M
 `
 
 Pick one that looks good, take the command line from the rightmost field and feed it back to makedivide:
