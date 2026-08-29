@@ -22,7 +22,9 @@ Note that many of these will require page alignment (starting at $xx00), and man
 ## I just want the 6502 code, but with a different stat mix.
 
 A list of all results produced by the full test (~5MB compressed, 330MB when uncompressed) is at **full-list.txt.xz**. Makedivide can parse this and emit stats again, using a different mix function, e.g.:
+
 	**makedivide.py -t -O full-list.txt -s -E -m 1 2 3 4 5 -o new-list.txt**
+
 (where you can substitute your weights (mean, mean to 64, mean to 16, median and worst-case) for "1 2 3 4 5")
 This will produce new-list.txt in the same format as the original full-list.txt.
 At the top of this file will be a list of entries, like this:
@@ -31,6 +33,7 @@ At the top of this file will be a list of entries, like this:
 	|5|0|0|N|N|N|N|N|0|Y|Y| 70 |45.8|71.2|109.9|34|370.0|47.7|73.4|112.6|36|372.0|-c5 -f0 -H -M
 
 Pick one that looks good, take the command line from the rightmost field and feed it back to makedivide:
+
 	**makedivide.py -o out.asm -c5 -f0 -H -M**
 
 The list of top (according to **--mix 2 3 4 0.5 1** weights) scoring parameters is in **top-list.txt**, and there is also a script **mkd.py** used to output **dividers.asm**.
@@ -38,11 +41,15 @@ The list of top (according to **--mix 2 3 4 0.5 1** weights) scoring parameters 
 ## Making a single divider routine
 
 A simple example:
+
 	**makedivide.py -o out.asm**
+
 produces a divider from default parameters, and writes it to the file **out.asm**.
 
 An example of changing the parameters:
+
 	**makedivide.py -c 4 -I -o out.asm**
+
 produces a divider with less (4) custom routines but with inlining switched on - resulting in a 57 byte routine rather than the default 193.
 
 ## Running multiple variations
