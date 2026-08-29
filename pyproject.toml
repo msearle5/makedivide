@@ -19,7 +19,7 @@ license = "BSD-2-Clause"
 license-files = ["LICENSE"]
 keywords = ["6502", "assembler", "compiler", "division"]
 classifiers = [
-"Development Status :: 5 - Production / Stable",
+"Development Status :: 5 - Production/Stable",
 "Intended Audience :: Developers",
 "Topic :: Software Development :: Build Tools",
 "Programming Language :: Python :: 3",
